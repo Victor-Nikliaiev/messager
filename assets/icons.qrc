@@ -1,0 +1,12 @@
+<RCC>
+  <qresource prefix="favicon">
+    <file>icons/chat.ico</file>
+  </qresource>
+  <qresource prefix="buttons">
+    <file>icons/send-message.png</file>
+  </qresource>
+  <qresource prefix="widget">
+    <file>icons/cleaning.png</file>
+    <file>icons/padlock.png</file>
+  </qresource>
+</RCC>

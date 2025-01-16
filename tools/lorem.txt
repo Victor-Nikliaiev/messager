@@ -1,0 +1,5 @@
+Encryption is the backbone of modern cybersecurity, ensuring that data remains secure from prying eyes. However, as we've seen, encryption is not foolproof. Weak implementations, poor key management, and overlooked vulnerabilities can expose even the most secure systems.
+
+For hackers, encryption is both a shield and a sword: a shield to protect their own data and tools, and a sword to bypass security or exploit encryption weaknesses.
+
+Understanding encryption will not only strengthen your defensive skills but also sharpen your offensive capabilities in ethical hacking and penetration testing.
