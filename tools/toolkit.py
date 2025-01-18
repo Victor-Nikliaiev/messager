@@ -185,28 +185,55 @@ class Tools:
             sys.exit(app.exec())
 
         @staticmethod
-        def center_widget(widget) -> qtw.QWidget:
+        def center_widget(widget, parent=None) -> qtw.QWidget:
             """
-            Centers the given widget on the screen.
+            Centers the given widget on the screen or within the given parent widget.
 
-            This method moves the provided widget to the center of the screen,
-            based on the available screen geometry. It calculates the center of the
-            screen and adjusts the widget's position accordingly, ensuring the widget
-            is displayed at the center of the screen.
+            This function moves the given widget to the center of the screen if no parent widget is given.
+            If a parent widget is given, the widget is centered within the parent.
 
-            Parameters:
-            widget (QWidget): The widget that will be centered on the screen.
+            Parameters
+            ----------
+            widget : QWidget
+                The widget to be centered.
+            parent : QWidget, optional
+                The parent widget within which the widget should be centered (default is None).
 
-            Returns:
-            QWidget: The input widget, now positioned at the center of the screen.
+            Returns
+            -------
+            QWidget
+                The centered widget.
 
-            Example:
+            Examples
+            --------
+            >>> my_widget = QWidget()
+            >>> my_widget.show()
             >>> center_widget(my_widget)
 
-            Note:
-            - This method uses the primary screen's available geometry to determine the center.
-            - It works only if the widget is already created and visible before calling the method.
+            >>> parent_widget = QWidget()
+            >>> my_widget = QWidget(parent_widget)
+            >>> my_widget.show()
+            >>> center_widget(my_widget, parent_widget)
+
+            Notes
+            -----
+            - If the parent widget is not given, the screen geometry is used to calculate the center.
+            - If the parent widget is given, the parent's geometry is used to calculate the center.
+            - The widget is not resized during the centering process.
+            - The widget is not reparented unless the parent widget is given.
             """
+            if parent:
+                widget.setParent(parent)
+
+                parent_geo = parent.frameGeometry()
+                parent_center = parent_geo.center()
+
+                geo = widget.frameGeometry()
+                geo.moveCenter(parent_center)
+                widget.move(geo.topLeft() - parent_geo.topLeft())
+
+                return widget
+
             center = qtg.QScreen.availableGeometry(
                 qtw.QApplication.primaryScreen()
             ).center()

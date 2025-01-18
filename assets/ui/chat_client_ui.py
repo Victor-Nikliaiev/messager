@@ -119,10 +119,16 @@ class Ui_ChatClient(object):
         )
         self.message_box_listWidget.setAutoScroll(True)
         self.message_box_listWidget.setAlternatingRowColors(True)
+        self.message_box_listWidget.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
         self.message_box_listWidget.setVerticalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
+        self.message_box_listWidget.setFlow(QListView.Flow.TopToBottom)
+        self.message_box_listWidget.setProperty("isWrapping", False)
         self.message_box_listWidget.setViewMode(QListView.ViewMode.ListMode)
+        self.message_box_listWidget.setWordWrap(True)
         self.message_box_listWidget.setSortingEnabled(False)
 
         self.verticalLayout_3.addWidget(self.message_box_listWidget)
@@ -188,6 +194,10 @@ class Ui_ChatClient(object):
             self.user_list_listWidget.sizePolicy().hasHeightForWidth()
         )
         self.user_list_listWidget.setSizePolicy(sizePolicy)
+        self.user_list_listWidget.setAlternatingRowColors(True)
+        self.user_list_listWidget.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
 
         self.verticalLayout_2.addWidget(self.user_list_listWidget)
 

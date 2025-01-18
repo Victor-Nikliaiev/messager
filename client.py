@@ -1,4 +1,5 @@
 import ast
+import json
 import socket
 import threading
 import sys
@@ -11,8 +12,18 @@ from assets.ui.chat_client_ui import Ui_ChatClient
 from tools.toolkit import Tools as t
 
 
+class PROTO:  # PROTOCOL
+    UPD_ULIST = "UPD_ULIST"
+    USER_NAME = "USER_NAME"
+    NO_TYPING = "NO_TYPING"
+    SRV_DOWN = "SRV_DOWN"
+    TYPING = "TYPING"
+    FILE = "FILE"
+    MSG = "MSG"
+    EMPTY = ""
+
+
 class ChatClient(qtw.QWidget, Ui_ChatClient):
-    update_user_list = qtc.Signal(str)
     typing = qtc.Signal(str)
 
     def __init__(self):
@@ -24,12 +35,13 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.connect_to_server()
 
         self.typing_list = ObservableSet()
+        self.connection_closed = False
+
         self.typing_list.set_add_listener(self.typing_list_handler)
         self.typing_list.set_remove_listener(self.typing_list_handler)
 
-        self.message_lineEdit.returnPressed.connect(self.send_message)
-        self.send_message_pushButton.clicked.connect(self.send_message)
-        self.update_user_list.connect(self.update_user_list_handler)
+        self.message_lineEdit.returnPressed.connect(self.send_client_message)
+        self.send_message_pushButton.clicked.connect(self.send_client_message)
         self.message_lineEdit.textChanged.connect(self.handle_typing)
         self.clear_chat_pushButton.clicked.connect(self.clear_chat)
 
@@ -42,6 +54,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
     def updateUi(self):
         self.setWindowTitle(f"Encrypted Chat Client v1.0 - [ {self.username} ]")
+        # self.message_box_listWidget.setResizeMode(qtw.QListWidget.Adjust)
 
     def _show_critical_error(
         self,
@@ -74,73 +87,116 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                 duration=60000,
             )
 
-        self.client_socket.sendall(self.username.encode())
+        self.username_length = len(self.username.encode())
+        payload = f"{PROTO.USER_NAME.ljust(10)}{self.username_length:04}{self.username}"
+        self.client_socket.sendall(payload.encode())
 
         self.listen_thread = ListenThread(self.client_socket)
-        self.listen_thread.message_received.connect(self.handle_received_message)
+        self.listen_thread.client_message_received.connect(
+            self.handle_received_client_message
+        )
+        self.listen_thread.service_message_received.connect(
+            self.handle_received_service_message
+        )
+        self.listen_thread.receiving_file.connect(self.handle_receiving_file)
         self.listen_thread.start()
 
     def show_popup(self, message, duration=2000, critical=False):
         self.popup = PopupWindow(message, duration, critical)
+        t.qt.center_widget(self.popup, parent=self)
         self.popup.show()
 
-    def send_message(self):
-        message = self.message_lineEdit.text()
-        message = message.strip()
+    def send_client_message(self):
+        msg = self.message_lineEdit.text()
+        msg = msg.strip()
 
-        if message == "":
+        if msg == "":
             return
+
+        protocol = PROTO.MSG.ljust(10)
+        msg_length = len(msg.encode())
+
+        payload = f"{protocol}{msg_length:04}{msg}"
 
         try:
-            self.client_socket.sendall(message.encode())
+            self.client_socket.sendall(payload.encode())
         except Exception as e:
             self.show_popup(e, 5000, critical=True)
+        finally:
+            self.message_lineEdit.clear()
 
-        self.message_lineEdit.clear()
+    def send_service_message(self, protocol: str, data: str):
+        protocol = protocol.ljust(10)
+        data_length = len(data.encode())
+        payload = f"{protocol}{data_length:04}{data}"
+        self.client_socket.sendall(payload.encode())
 
-    def handle_received_message(self, message_bytes: bytes):
-        message = message_bytes.decode()
+    def handle_received_client_message(self, username, message):
 
-        if message.startswith("**TYPING**"):
-            print(message)
-            self.add_to_typing_list(message)
-            return
+        # if message.startswith("**TYPING**"):
+        #     print(message)
+        #     self.add_to_typing_list(message)
+        #     return
 
-        if message.startswith("**NO_TYPING**"):
-            print(message)
-            self.remove_from_typing_list(message)
-            return
+        # if message.startswith("**NO_TYPING**"):
+        #     print(message)
+        #     self.remove_from_typing_list(message)
+        #     return
 
-        if message.startswith("**UPDATE_USER_LIST**"):
-            self.update_user_list.emit(message)
-            return
+        # if message.startswith("**UPDATE_USER_LIST**"):
+        #     self.update_user_list.emit(message)
+        #     return
 
-        if message.startswith("**SERVER_SHUTDOWN**"):
+        # if message.startswith("**SERVER_SHUTDOWN**"):
+        #     self.show_popup(
+        #         "Server was shut down. Connection closed", 3600000, critical=True
+        #     )
+        #     self.client_socket.close()
+        #     self.setEnabled(False)
+        #     return
+
+        if message == PROTO.EMPTY:
+            print("Server was shut down. Connection closed.")
             self.show_popup(
-                "Server was shut down. Connection closed", 3600000, critical=True
+                "Server was shut down. Connection closed.", 3600000, critical=True
             )
             self.client_socket.close()
             self.setEnabled(False)
+            self.connection_closed = True
             return
 
-        if message != "":
-            username, content = message.split("~")
-            item = qtw.QListWidgetItem(f"[ {username} ]: {content}")
-            self.message_box_listWidget.addItem(item)
-            self.message_box_listWidget.scrollToBottom()
+        item = qtw.QListWidgetItem(f"[ {username} ]: {message}")
+        self.message_box_listWidget.addItem(item)
+        self.message_box_listWidget.scrollToBottom()
 
-        else:
-            print("Server has closed the connection")
-            self.show_popup("Server has closed the connection", 3600000, critical=True)
-            self.client_socket.close()
-            self.setEnabled(False)
+    def handle_received_service_message(self, protocol, data):
+        if protocol == PROTO.UPD_ULIST:
+            self.update_user_list(data)
+        if protocol == PROTO.SRV_DOWN:
+            self.handle_server_shutdown()
+        if protocol == PROTO.TYPING:
+            # self.add_to_typing_list(data)
+            self.typing_list.add(data)
+        if protocol == PROTO.NO_TYPING:
+            # self.remove_from_typing_list(data)
+            self.typing_list.discard(data)
 
-    def update_user_list_handler(self, message):
-        username_list = ast.literal_eval(message.split("**UPDATE_USER_LIST**")[1])
+    def handle_server_shutdown(self):
+        self.show_popup(
+            "Server was shut down. Connection closed.", 3600000, critical=True
+        )
+        self.client_socket.close()
+        self.setEnabled(False)
 
+    def handle_receiving_file(self):
+        pass
+
+    def update_user_list(self, data):
         self.user_list_listWidget.clear()
 
-        for user in username_list:
+        active_users_list = json.loads(data)
+
+        for user in active_users_list:
             self.user_list_listWidget.addItem(user)
 
     def closeEvent(self, event):
@@ -153,16 +209,13 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         threading.Thread(target=self.send_typing_status).start()
 
     def send_typing_status(self):
-        time.sleep(0.1)
-        self.client_socket.sendall("**TYPING**".encode())
+        self.send_service_message(PROTO.TYPING, self.username)
 
-    def add_to_typing_list(self, message: str):
-        username = message.split("**TYPING**")[1]
-        self.typing_list.add(username)
+    # def add_to_typing_list(self, username):
+    #     self.typing_list.add(username)
 
-    def remove_from_typing_list(self, message: str):
-        username = message.split("**NO_TYPING**")[1]
-        self.typing_list.discard(username)
+    # def remove_from_typing_list(self, username):
+    #     self.typing_list.discard(username)
 
     def typing_list_handler(self):
         self.typing_list_label.setText("")
@@ -185,7 +238,9 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
 
 class ListenThread(qtc.QThread):
-    message_received = qtc.Signal(bytes)
+    client_message_received = qtc.Signal(str, str)
+    service_message_received = qtc.Signal(str, str)
+    receiving_file = qtc.Signal(bytes)
 
     def __init__(self, client_socket: socket.socket):
         super().__init__()
@@ -195,12 +250,43 @@ class ListenThread(qtc.QThread):
     def run(self):
         while True:
             try:
-                message = self.client_socket.recv(2048)
-                if message != b"":
-                    self.message_received.emit(message)
+                protocol = self.client_socket.recv(10).decode().strip()
+
+                if protocol == PROTO.EMPTY:
+                    self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
+
+                if protocol == PROTO.MSG:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    message_length = self.get_received_length()
+                    message = self.get_received_data(message_length)
+
+                    self.client_message_received.emit(username, message)
+
+                if protocol == PROTO.UPD_ULIST:
+                    user_list_length = self.get_received_length()
+                    user_list = self.get_received_data(user_list_length)
+                    self.service_message_received.emit(PROTO.UPD_ULIST, user_list)
+
+                if protocol == PROTO.TYPING:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    self.service_message_received.emit(PROTO.TYPING, username)
+
+                if protocol == PROTO.NO_TYPING:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    self.service_message_received.emit(PROTO.NO_TYPING, username)
+
             except Exception as e:
                 print(e)
                 break
+
+    def get_received_length(self):
+        return int(self.client_socket.recv(4).decode().strip())
+
+    def get_received_data(self, length):
+        return self.client_socket.recv(length).decode().strip()
 
 
 class PopupWindow(qtw.QWidget):
@@ -233,8 +319,6 @@ class PopupWindow(qtw.QWidget):
         layout.addWidget(label)
         self.setLayout(layout)
         self.adjustSize()
-        t.qt.center_widget(self)
-
         qtc.QTimer.singleShot(duration, self.close)
 
 

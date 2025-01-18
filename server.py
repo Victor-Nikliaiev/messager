@@ -2,6 +2,7 @@ from functools import wraps
 import socket
 import threading
 from typing import List, Tuple
+import json
 
 HOST = "0.0.0.0"
 PORT = 1060
@@ -13,8 +14,7 @@ typing_users = set()
 
 
 class PROTO:  # PROTOCOL
-    ENTER_SERV = "ENTER_SERV"
-    LEAVE_SERV = "LEAVE_SERV"
+    UPD_ULIST = "UPD_ULIST"
     USER_NAME = "USER_NAME"
     NO_TYPING = "NO_TYPING"
     SRV_DOWN = "SRV_DOWN"
@@ -49,7 +49,8 @@ def listen_for_messages(client_socket: socket.socket, username):
         if header == PROTO.EMPTY:
             client_socket.close()
             active_clients.remove((username, client_socket))
-            broadcast_service_message(PROTO.LEAVE_SERV, username)
+            active_clients_list = [client[0] for client in active_clients]
+            broadcast_service_message(PROTO.UPD_ULIST, json.dumps(active_clients_list))
             broadcast_message("SERVER", f"{username} left the chat.")
             print(f"{username} left the chat.")
             break
@@ -80,10 +81,10 @@ def broadcast_message(sender_username, message):
 
     protocol = PROTO.MSG.ljust(10)
 
-    message_length = len(message)
+    message_length = len(message.encode())
     message_length = f"{message_length:04}"
 
-    sender_username_length = len(sender_username)
+    sender_username_length = len(sender_username.encode())
     sender_username_length = f"{sender_username_length:04}"
 
     protocol_payload = (
@@ -101,19 +102,19 @@ def broadcast_message(sender_username, message):
             active_clients.remove(client)
 
 
-def broadcast_service_message(header, username):
+def broadcast_service_message(header, data):
     # Send protocol
-    # Send username length
-    # Send username
+    # Send data length
+    # Send data
 
     protocol = header.ljust(10)
-    username_length = len(username)
-    username_length = f"{username_length:04}"
-    payload = f"{protocol}{username_length}{username}"
+    data_length = len(data.encode())
+    data_length = f"{data_length:04}"
+    payload = f"{protocol}{data_length}{data}"
 
     for client in active_clients:
         user_socket = client[1]
-        user_socket.sendall(payload)
+        user_socket.sendall(payload.encode())
 
 
 def receive_client_message(client_socket):
@@ -193,7 +194,7 @@ def forward_file_chunks(client_socket: socket.socket, username):
 def handle_typing_status():
     while typing_users:
         username = typing_users.pop()
-        broadcast_service_message("NO_TYPING", username)
+        broadcast_service_message(PROTO.NO_TYPING, username)
 
 
 def client_handler(client_socket: socket.socket):
@@ -212,10 +213,11 @@ def client_handler(client_socket: socket.socket):
             if not username:
                 return
 
-            active_clients.append(username, client_socket)
+            active_clients.append((username, client_socket))
+            active_clients_list = [client[0] for client in active_clients]
             print(f"{username} joined in.")
             broadcast_message("SERVER", f"{username} have been added to the chat.")
-            broadcast_service_message(PROTO.ENTER_SERV, username)
+            broadcast_service_message(PROTO.UPD_ULIST, json.dumps(active_clients_list))
             break
 
     threading.Thread(
