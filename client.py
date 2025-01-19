@@ -1,15 +1,19 @@
 import ast
 import json
+import os
+import re
 import socket
 import threading
 import sys
 import time
+from xml.etree.ElementInclude import include
 from PySide6 import QtCore as qtc
 from PySide6 import QtWidgets as qtw
 from PySide6 import QtGui as qtg
 from PySide6 import QtUiTools as qtu
 from assets.ui.chat_client_ui import Ui_ChatClient
 from tools.toolkit import Tools as t
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
 class PROTO:  # PROTOCOL
@@ -44,6 +48,11 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.send_message_pushButton.clicked.connect(self.send_client_message)
         self.message_lineEdit.textChanged.connect(self.handle_typing)
         self.clear_chat_pushButton.clicked.connect(self.clear_chat)
+
+        self.in_message = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.in_message.setAudioOutput(self.audio_output)
+        self.in_message.setSource("assets/audio/in_message.mp3")
 
     def setupCredentials(self):
         self.host = self._setup_credential(
@@ -101,6 +110,16 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.listen_thread.receiving_file.connect(self.handle_receiving_file)
         self.listen_thread.start()
 
+        self.user_list_listWidget.itemClicked.connect(self.handle_on_user_click)
+
+    def handle_on_user_click(self, item: qtw.QListWidgetItem):
+        username = item.text()
+        if username == self.username:
+            return
+
+        self.message_lineEdit.setText(self.message_lineEdit.text() + f"@{username}")
+        self.message_lineEdit.setFocus()
+
     def show_popup(self, message, duration=2000, critical=False):
         self.popup = PopupWindow(message, duration, critical)
         t.qt.center_widget(self.popup, parent=self)
@@ -131,7 +150,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         payload = f"{protocol}{data_length:04}{data}"
         self.client_socket.sendall(payload.encode())
 
-    def handle_received_client_message(self, username, message):
+    def handle_received_client_message(self, username, message: str):
 
         # if message.startswith("**TYPING**"):
         #     print(message)
@@ -165,9 +184,46 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             self.connection_closed = True
             return
 
-        item = qtw.QListWidgetItem(f"[ {username} ]: {message}")
+        item = qtw.QListWidgetItem()
+        label = self.format_message(username, message)
         self.message_box_listWidget.addItem(item)
+        self.message_box_listWidget.setItemWidget(item, label)
         self.message_box_listWidget.scrollToBottom()
+
+        # if username != self.username:
+        #     self.in_message.play()
+
+    def extract_nickname(self, message):
+        # Regex pattern to match nicknames starting with @
+        pattern = r"@(\w+)"
+        match = re.search(pattern, message)
+        if match:
+            return match.group(0)  # Return the full match (with "@")
+        return None  # No nickname found
+
+    def format_message(self, username: str, message: str) -> qtw.QLabel:
+        username_color = "#0887aa"
+        message_color = "green"
+        own_nickname_color = "#c13310"
+
+        if username == "SERVER":
+            username_color = "#676767"
+            message_color = "#676767"
+
+        if "@" in message:
+            nickname = self.extract_nickname(message)
+            if nickname:
+                if nickname == "@" + self.username:
+                    formatted_nickname = f'<span style="color:{own_nickname_color};"><strong>{nickname}</strong></span>'
+                    message = message.replace(nickname, formatted_nickname)
+                    # If current nickname was mentioned in the chat, play audio notification
+                    self.in_message.play()
+
+        label = qtw.QLabel(
+            f'<span style="color:{username_color}; font-weight:bold;">[{username}]</span>: '
+            f'<span style="color:{message_color};">{message}</span>'
+        )
+        return label
 
     def handle_received_service_message(self, protocol, data):
         if protocol == PROTO.UPD_ULIST:

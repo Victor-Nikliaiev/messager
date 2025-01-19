@@ -194,6 +194,9 @@ class Ui_ChatClient(object):
             self.user_list_listWidget.sizePolicy().hasHeightForWidth()
         )
         self.user_list_listWidget.setSizePolicy(sizePolicy)
+        self.user_list_listWidget.viewport().setProperty(
+            "cursor", QCursor(Qt.CursorShape.PointingHandCursor)
+        )
         self.user_list_listWidget.setAlternatingRowColors(True)
         self.user_list_listWidget.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
