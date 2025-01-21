@@ -1,19 +1,26 @@
 import ast
 import json
 import os
+import platform
 import re
 import socket
 import threading
 import sys
 import time
-from xml.etree.ElementInclude import include
+
 from PySide6 import QtCore as qtc
 from PySide6 import QtWidgets as qtw
 from PySide6 import QtGui as qtg
 from PySide6 import QtUiTools as qtu
+import pyperclip
+from assets.emoji.QCustomEmojiPicker import QCustomEmojiPicker
 from assets.ui.chat_client_ui import Ui_ChatClient
+from backend import sm
+from screens.confirm_file_screen import ConfirmFileScreen
 from tools.toolkit import Tools as t
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+import subprocess
+import sys
 
 
 class PROTO:  # PROTOCOL
@@ -29,14 +36,19 @@ class PROTO:  # PROTOCOL
 
 class ChatClient(qtw.QWidget, Ui_ChatClient):
     typing = qtc.Signal(str)
+    update_send_file_button_status = qtc.Signal()
 
     def __init__(self):
         super().__init__()
         self.setupUi(self)
         t.qt.center_widget(self)
+
         self.setupCredentials()
         self.updateUi()
         self.connect_to_server()
+
+        self.original_key_press_event = self.message_lineEdit.keyPressEvent
+        self.message_lineEdit.keyPressEvent = self.my_key_press_event
 
         self.typing_list = ObservableSet()
         self.connection_closed = False
@@ -44,15 +56,20 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.typing_list.set_add_listener(self.typing_list_handler)
         self.typing_list.set_remove_listener(self.typing_list_handler)
 
+        self.emoji_chooser_pushButton.clicked.connect(
+            lambda: self.showEmojiPicker(self.message_lineEdit)
+        )
         self.message_lineEdit.returnPressed.connect(self.send_client_message)
         self.send_message_pushButton.clicked.connect(self.send_client_message)
         self.message_lineEdit.textChanged.connect(self.handle_typing)
         self.clear_chat_pushButton.clicked.connect(self.clear_chat)
+        self.choose_file_option.triggered.connect(self.choose_file)
 
         self.in_message = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.in_message.setAudioOutput(self.audio_output)
         self.in_message.setSource("assets/audio/in_message.mp3")
+        self.send_file_pushButton.clicked.connect(self.show_menu)
 
     def setupCredentials(self):
         self.host = self._setup_credential(
@@ -63,7 +80,14 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
     def updateUi(self):
         self.setWindowTitle(f"Encrypted Chat Client v1.0 - [ {self.username} ]")
-        # self.message_box_listWidget.setResizeMode(qtw.QListWidget.Adjust)
+        self.emoji_font = qtg.QFont("Noto Color Emoji")
+        self.setFont(self.emoji_font)
+        self.message_lineEdit.setFont(self.emoji_font)
+        self.message_box_listWidget.setFont(self.emoji_font)
+
+        self.file_menu = qtw.QMenu(self)
+        self.choose_file_option = self.file_menu.addAction("Send File")
+        self.file_menu.setCursor(qtc.Qt.PointingHandCursor)
 
     def _show_critical_error(
         self,
@@ -83,6 +107,52 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         return param
 
+    def showEmojiPicker(self, target_widget):
+        emoji_picker = QCustomEmojiPicker(
+            target=target_widget, parent=self, itemsPerRow=16
+        )
+
+        emoji_picker.show()
+
+        # Add shadow effect
+        effect = emoji_picker.graphicsEffect()
+        if effect is None:
+            effect = qtw.QGraphicsDropShadowEffect(emoji_picker)
+        effect.setColor(qtg.QColor(30, 30, 30, 200))
+        effect.setBlurRadius(20)
+        effect.setXOffset(0)
+        effect.setYOffset(0)
+        emoji_picker.setGraphicsEffect(effect)
+
+    def show_menu(self):
+        self.file_menu.exec(
+            self.send_file_pushButton.mapToGlobal(
+                self.send_file_pushButton.rect().bottomLeft()
+            )
+        )
+
+    def choose_file(self):
+        file_path, _ = qtw.QFileDialog.getOpenFileName(
+            self, "Select a file to send", "", "All Files (*);;"
+        )
+
+        if file_path:
+            sm.dropped_file_path.signal.emit(file_path)
+            self.confirm_file_screen = ConfirmFileScreen(self)
+            self.confirm_file_screen.show()
+
+    def my_key_press_event(self, event):
+
+        if event.key() == qtc.Qt.Key_Return or event.key() == qtc.Qt.Key_Enter:
+            if event.modifiers() == qtc.Qt.ShiftModifier:
+                # Insert a newline character when Shift + Enter is pressed
+                current_text = self.message_lineEdit.text()
+                self.message_lineEdit.setText(current_text + "\n")
+                return
+
+            self.original_key_press_event(event)
+        self.original_key_press_event(event)
+
     def connect_to_server(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # self.client_socket.settimeout(5)  # 5 seconds timeout
@@ -101,6 +171,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.client_socket.sendall(payload.encode())
 
         self.listen_thread = ListenThread(self.client_socket)
+
         self.listen_thread.client_message_received.connect(
             self.handle_received_client_message
         )
@@ -109,8 +180,9 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         )
         self.listen_thread.receiving_file.connect(self.handle_receiving_file)
         self.listen_thread.start()
-
         self.user_list_listWidget.itemClicked.connect(self.handle_on_user_click)
+
+        threading.Thread(target=ClipboardClearingThread(self).run, daemon=True).start()
 
     def handle_on_user_click(self, item: qtw.QListWidgetItem):
         username = item.text()
@@ -185,7 +257,13 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             return
 
         item = qtw.QListWidgetItem()
+
         label = self.format_message(username, message)
+        item.setSizeHint(label.sizeHint())
+        # label.setSizePolicy(item.sizeHint())
+
+        # label.setFixedSize(item_size)
+        # label.setMaximumHeight(item.sizeHint().height())
         self.message_box_listWidget.addItem(item)
         self.message_box_listWidget.setItemWidget(item, label)
         self.message_box_listWidget.scrollToBottom()
@@ -203,12 +281,12 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
     def format_message(self, username: str, message: str) -> qtw.QLabel:
         username_color = "#0887aa"
-        message_color = "green"
+        message_color = "#0cb482"
         own_nickname_color = "#c13310"
 
         if username == "SERVER":
-            username_color = "#676767"
-            message_color = "#676767"
+            username_color = "#df6c81"
+            message_color = "#df6c81"
 
         if "@" in message:
             nickname = self.extract_nickname(message)
@@ -223,6 +301,15 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             f'<span style="color:{username_color}; font-weight:bold;">[{username}]</span>: '
             f'<span style="color:{message_color};">{message}</span>'
         )
+
+        label.setText(label.text().replace("\n", "<br>"))
+        label.setWordWrap(True)  # Enable word wrapping
+        label.setContentsMargins(0, 0, 0, 0)
+        # label.adjustSize()
+        # label.setAlignment(qtc.Qt.AlignLeft)
+
+        label.setMinimumWidth(self.message_box_listWidget.width())
+
         return label
 
     def handle_received_service_message(self, protocol, data):
@@ -345,6 +432,42 @@ class ListenThread(qtc.QThread):
         return self.client_socket.recv(length).decode().strip()
 
 
+class ClipboardClearingThread:
+    def __init__(self, client_instance: ChatClient):
+        self.client_instance = client_instance
+
+    def run(self):
+        if platform.system() == "Linux":
+            if self.is_xclip_avaliable() is False:
+                self.show_popup()
+                return
+
+        while True:
+            clipboard_content = pyperclip.paste()
+            if clipboard_content:
+                pyperclip.copy("")
+            time.sleep(1)
+
+    def is_xclip_avaliable(self):
+        try:
+            subprocess.run(["xclip", "-version"], check=True, stdout=subprocess.DEVNULL)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def show_popup(self):
+        self.client_instance.popup = PopupWindow(
+            "xclip is not installed. please run: 'sudo apt install xclip' on your system.",
+            3600000,
+            critical=True,
+        )
+        self.client_instance.popup = t.qt.center_widget(self.client_instance.popup)
+        self.client_instance.popup.show()
+
+        self.client_instance.client_socket.close()
+        self.client_instance.setEnabled(False)
+
+
 class PopupWindow(qtw.QWidget):
     def __init__(self, message, duration=3000, critical=False):
         super().__init__()
@@ -375,6 +498,7 @@ class PopupWindow(qtw.QWidget):
         layout.addWidget(label)
         self.setLayout(layout)
         self.adjustSize()
+
         qtc.QTimer.singleShot(duration, self.close)
 
 

@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>662</width>
-    <height>474</height>
+    <width>681</width>
+    <height>476</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -16,6 +16,16 @@
   <property name="windowIcon">
    <iconset resource="../icons.qrc">
     <normaloff>:/favicon/icons/chat.ico</normaloff>:/favicon/icons/chat.ico</iconset>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget {
+	color: #33979c;
+	background-color: #263238;
+}
+
+QListWidget QLabel {
+	font-family: &quot;Noto Color Emoji&quot;;
+}</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -74,6 +84,12 @@
            <verstretch>0</verstretch>
           </sizepolicy>
          </property>
+         <property name="acceptDrops">
+          <bool>true</bool>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">word-spacing: -5px;</string>
+         </property>
          <property name="frameShape">
           <enum>QFrame::Shape::Box</enum>
          </property>
@@ -89,11 +105,23 @@
          <property name="autoScroll">
           <bool>true</bool>
          </property>
+         <property name="dragEnabled">
+          <bool>false</bool>
+         </property>
+         <property name="dragDropMode">
+          <enum>QAbstractItemView::DragDropMode::DragDrop</enum>
+         </property>
+         <property name="defaultDropAction">
+          <enum>Qt::DropAction::IgnoreAction</enum>
+         </property>
          <property name="alternatingRowColors">
           <bool>true</bool>
          </property>
          <property name="selectionMode">
           <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+         </property>
+         <property name="textElideMode">
+          <enum>Qt::TextElideMode::ElideNone</enum>
          </property>
          <property name="verticalScrollMode">
           <enum>QAbstractItemView::ScrollMode::ScrollPerPixel</enum>
@@ -135,7 +163,11 @@
             </sizepolicy>
            </property>
            <property name="styleSheet">
-            <string notr="true">padding: 5px;</string>
+            <string notr="true">padding: 5px;
+color: #8ac630;
+font-weight: bold;
+font-size: 11px;
+</string>
            </property>
            <property name="text">
             <string/>
@@ -233,6 +265,35 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_2">
      <item>
+      <widget class="QPushButton" name="emoji_chooser_pushButton">
+       <property name="maximumSize">
+        <size>
+         <width>40</width>
+         <height>40</height>
+        </size>
+       </property>
+       <property name="cursor">
+        <cursorShape>PointingHandCursor</cursorShape>
+       </property>
+       <property name="toolTip">
+        <string>Attach an emoji</string>
+       </property>
+       <property name="text">
+        <string/>
+       </property>
+       <property name="icon">
+        <iconset resource="../icons.qrc">
+         <normaloff>:/widget/icons/smile.png</normaloff>:/widget/icons/smile.png</iconset>
+       </property>
+       <property name="iconSize">
+        <size>
+         <width>20</width>
+         <height>20</height>
+        </size>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QLineEdit" name="message_lineEdit">
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
@@ -246,9 +307,14 @@
          <height>40</height>
         </size>
        </property>
+       <property name="toolTip">
+        <string>Here you can enter your message</string>
+       </property>
        <property name="styleSheet">
         <string notr="true">padding-left: 10px;
-color: auto;</string>
+position: fixed;
+border: 1px solid #33979c;
+word-spacing: -5px;</string>
        </property>
        <property name="echoMode">
         <enum>QLineEdit::EchoMode::Normal</enum>
@@ -257,10 +323,41 @@ color: auto;</string>
         <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
        </property>
        <property name="placeholderText">
-        <string>Enter your message here and press Enter or Send button...</string>
+        <string>Shift + Enter for new line, Enter to send</string>
        </property>
        <property name="clearButtonEnabled">
         <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="send_file_pushButton">
+       <property name="font">
+        <font>
+         <pointsize>16</pointsize>
+        </font>
+       </property>
+       <property name="cursor">
+        <cursorShape>PointingHandCursor</cursorShape>
+       </property>
+       <property name="contextMenuPolicy">
+        <enum>Qt::ContextMenuPolicy::DefaultContextMenu</enum>
+       </property>
+       <property name="toolTip">
+        <string>Attach a file</string>
+       </property>
+       <property name="text">
+        <string/>
+       </property>
+       <property name="icon">
+        <iconset resource="../icons.qrc">
+         <normaloff>:/buttons/icons/paper.png</normaloff>:/buttons/icons/paper.png</iconset>
+       </property>
+       <property name="iconSize">
+        <size>
+         <width>35</width>
+         <height>35</height>
+        </size>
        </property>
       </widget>
      </item>
@@ -281,10 +378,18 @@ color: auto;</string>
        <property name="font">
         <font>
          <pointsize>16</pointsize>
+         <bold>true</bold>
         </font>
        </property>
        <property name="cursor">
         <cursorShape>PointingHandCursor</cursorShape>
+       </property>
+       <property name="toolTip">
+        <string>Send the message</string>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">font-weight: bold;
+ </string>
        </property>
        <property name="text">
         <string> Send</string>

@@ -65,12 +65,22 @@ class Ui_ChatClient(object):
     def setupUi(self, ChatClient):
         if not ChatClient.objectName():
             ChatClient.setObjectName("ChatClient")
-        ChatClient.resize(662, 474)
+        ChatClient.resize(681, 476)
         icon = QIcon()
         icon.addFile(
             ":/favicon/icons/chat.ico", QSize(), QIcon.Mode.Normal, QIcon.State.Off
         )
         ChatClient.setWindowIcon(icon)
+        ChatClient.setStyleSheet(
+            "QWidget {\n"
+            "	color: #33979c;\n"
+            "	background-color: #263238;\n"
+            "}\n"
+            "\n"
+            "QListWidget QLabel {\n"
+            '	font-family: "Noto Color Emoji";\n'
+            "}"
+        )
         self.verticalLayout = QVBoxLayout(ChatClient)
         self.verticalLayout.setObjectName("verticalLayout")
         self.horizontalLayout_3 = QHBoxLayout()
@@ -111,6 +121,8 @@ class Ui_ChatClient(object):
             self.message_box_listWidget.sizePolicy().hasHeightForWidth()
         )
         self.message_box_listWidget.setSizePolicy(sizePolicy)
+        self.message_box_listWidget.setAcceptDrops(True)
+        self.message_box_listWidget.setStyleSheet("word-spacing: -5px;")
         self.message_box_listWidget.setFrameShape(QFrame.Shape.Box)
         self.message_box_listWidget.setFrameShadow(QFrame.Shadow.Raised)
         self.message_box_listWidget.setLineWidth(1)
@@ -118,10 +130,16 @@ class Ui_ChatClient(object):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.message_box_listWidget.setAutoScroll(True)
+        self.message_box_listWidget.setDragEnabled(False)
+        self.message_box_listWidget.setDragDropMode(
+            QAbstractItemView.DragDropMode.DragDrop
+        )
+        self.message_box_listWidget.setDefaultDropAction(Qt.DropAction.IgnoreAction)
         self.message_box_listWidget.setAlternatingRowColors(True)
         self.message_box_listWidget.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
         )
+        self.message_box_listWidget.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.message_box_listWidget.setVerticalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
         )
@@ -147,7 +165,13 @@ class Ui_ChatClient(object):
             self.typing_list_label.sizePolicy().hasHeightForWidth()
         )
         self.typing_list_label.setSizePolicy(sizePolicy1)
-        self.typing_list_label.setStyleSheet("padding: 5px;")
+        self.typing_list_label.setStyleSheet(
+            "padding: 5px;\n"
+            "color: #8ac630;\n"
+            "font-weight: bold;\n"
+            "font-size: 11px;\n"
+            ""
+        )
         self.typing_list_label.setWordWrap(True)
 
         self.horizontalLayout_4.addWidget(self.typing_list_label)
@@ -219,6 +243,21 @@ class Ui_ChatClient(object):
 
         self.horizontalLayout_2 = QHBoxLayout()
         self.horizontalLayout_2.setObjectName("horizontalLayout_2")
+        self.emoji_chooser_pushButton = QPushButton(ChatClient)
+        self.emoji_chooser_pushButton.setObjectName("emoji_chooser_pushButton")
+        self.emoji_chooser_pushButton.setMaximumSize(QSize(40, 40))
+        self.emoji_chooser_pushButton.setCursor(
+            QCursor(Qt.CursorShape.PointingHandCursor)
+        )
+        icon2 = QIcon()
+        icon2.addFile(
+            ":/widget/icons/smile.png", QSize(), QIcon.Mode.Normal, QIcon.State.Off
+        )
+        self.emoji_chooser_pushButton.setIcon(icon2)
+        self.emoji_chooser_pushButton.setIconSize(QSize(20, 20))
+
+        self.horizontalLayout_2.addWidget(self.emoji_chooser_pushButton)
+
         self.message_lineEdit = QLineEdit(ChatClient)
         self.message_lineEdit.setObjectName("message_lineEdit")
         sizePolicy3 = QSizePolicy(
@@ -231,7 +270,12 @@ class Ui_ChatClient(object):
         )
         self.message_lineEdit.setSizePolicy(sizePolicy3)
         self.message_lineEdit.setMinimumSize(QSize(0, 40))
-        self.message_lineEdit.setStyleSheet("padding-left: 10px;\n" "color: auto;")
+        self.message_lineEdit.setStyleSheet(
+            "padding-left: 10px;\n"
+            "position: fixed;\n"
+            "border: 1px solid #33979c;\n"
+            "word-spacing: -5px;"
+        )
         self.message_lineEdit.setEchoMode(QLineEdit.EchoMode.Normal)
         self.message_lineEdit.setAlignment(
             Qt.AlignmentFlag.AlignLeading
@@ -241,6 +285,24 @@ class Ui_ChatClient(object):
         self.message_lineEdit.setClearButtonEnabled(True)
 
         self.horizontalLayout_2.addWidget(self.message_lineEdit)
+
+        self.send_file_pushButton = QPushButton(ChatClient)
+        self.send_file_pushButton.setObjectName("send_file_pushButton")
+        font1 = QFont()
+        font1.setPointSize(16)
+        self.send_file_pushButton.setFont(font1)
+        self.send_file_pushButton.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.send_file_pushButton.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.DefaultContextMenu
+        )
+        icon3 = QIcon()
+        icon3.addFile(
+            ":/buttons/icons/paper.png", QSize(), QIcon.Mode.Normal, QIcon.State.Off
+        )
+        self.send_file_pushButton.setIcon(icon3)
+        self.send_file_pushButton.setIconSize(QSize(35, 35))
+
+        self.horizontalLayout_2.addWidget(self.send_file_pushButton)
 
         self.send_message_pushButton = QPushButton(ChatClient)
         self.send_message_pushButton.setObjectName("send_message_pushButton")
@@ -254,20 +316,22 @@ class Ui_ChatClient(object):
         )
         self.send_message_pushButton.setSizePolicy(sizePolicy4)
         self.send_message_pushButton.setMinimumSize(QSize(0, 40))
-        font1 = QFont()
-        font1.setPointSize(16)
-        self.send_message_pushButton.setFont(font1)
+        font2 = QFont()
+        font2.setPointSize(16)
+        font2.setBold(True)
+        self.send_message_pushButton.setFont(font2)
         self.send_message_pushButton.setCursor(
             QCursor(Qt.CursorShape.PointingHandCursor)
         )
-        icon2 = QIcon()
-        icon2.addFile(
+        self.send_message_pushButton.setStyleSheet("font-weight: bold;\n" " ")
+        icon4 = QIcon()
+        icon4.addFile(
             ":/buttons/icons/send-message.png",
             QSize(),
             QIcon.Mode.Normal,
             QIcon.State.Off,
         )
-        self.send_message_pushButton.setIcon(icon2)
+        self.send_message_pushButton.setIcon(icon4)
         self.send_message_pushButton.setIconSize(QSize(20, 20))
 
         self.horizontalLayout_2.addWidget(self.send_message_pushButton)
@@ -302,13 +366,35 @@ class Ui_ChatClient(object):
         self.groupBox.setTitle(
             QCoreApplication.translate("ChatClient", "Connected users:", None)
         )
-        self.message_lineEdit.setPlaceholderText(
+        # if QT_CONFIG(tooltip)
+        self.emoji_chooser_pushButton.setToolTip(
+            QCoreApplication.translate("ChatClient", "Attach an emoji", None)
+        )
+        # endif // QT_CONFIG(tooltip)
+        self.emoji_chooser_pushButton.setText("")
+        # if QT_CONFIG(tooltip)
+        self.message_lineEdit.setToolTip(
             QCoreApplication.translate(
-                "ChatClient",
-                "Enter your message here and press Enter or Send button...",
-                None,
+                "ChatClient", "Here you can enter your message", None
             )
         )
+        # endif // QT_CONFIG(tooltip)
+        self.message_lineEdit.setPlaceholderText(
+            QCoreApplication.translate(
+                "ChatClient", "Shift + Enter for new line, Enter to send", None
+            )
+        )
+        # if QT_CONFIG(tooltip)
+        self.send_file_pushButton.setToolTip(
+            QCoreApplication.translate("ChatClient", "Attach a file", None)
+        )
+        # endif // QT_CONFIG(tooltip)
+        self.send_file_pushButton.setText("")
+        # if QT_CONFIG(tooltip)
+        self.send_message_pushButton.setToolTip(
+            QCoreApplication.translate("ChatClient", "Send the message", None)
+        )
+        # endif // QT_CONFIG(tooltip)
         self.send_message_pushButton.setText(
             QCoreApplication.translate("ChatClient", " Send", None)
         )

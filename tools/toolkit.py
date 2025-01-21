@@ -66,7 +66,7 @@ class Tools:
                 return f.read()
 
         @staticmethod
-        def format_input_path(path):
+        def format_file_path(path):
             """
             Shortens the file path and file name if they exceed 30 characters each,
             by truncating and appending ellipses. Returns the formatted file path.
@@ -86,6 +86,36 @@ class Tools:
                 file_name = f"{file_name[:14]}...{file_name[-14:]}"
 
             return os.path.join(file_path, file_name)
+
+        @staticmethod
+        def shorten_file_name(
+            file_name=None,
+            filepath=None,
+            max_length=20,
+        ):
+            """
+            Shorten a file name to a maximum length by truncating and appending ellipses.
+
+            Args:
+                file_name: The file name to be shortened.
+                filepath: The file path from which to extract the file name if it is not provided.
+                max_length: The maximum length of the file name after shortening.
+
+            Returns:
+                The shortened file name.
+            """
+            if file_name is None and filepath is not None:
+                file_name = os.path.basename(filepath)
+
+            if file_name is None and filepath is None:
+                raise ValueError("Either file_name or filepath must be provided.")
+
+            if len(file_name) > max_length:
+                file_extension = os.path.splitext(file_name)[1]
+                file_name = f"{file_name[:17]}...{file_extension}"
+                return file_name
+
+            return file_name
 
     class qt:
         @staticmethod
@@ -185,7 +215,7 @@ class Tools:
             sys.exit(app.exec())
 
         @staticmethod
-        def center_widget(widget, parent=None) -> qtw.QWidget:
+        def center_widget(widget, parent=None, sticky=True) -> qtw.QWidget:
             """
             Centers the given widget on the screen or within the given parent widget.
 
@@ -223,7 +253,8 @@ class Tools:
             - The widget is not reparented unless the parent widget is given.
             """
             if parent:
-                widget.setParent(parent)
+                if sticky:
+                    widget.setParent(parent)
 
                 parent_geo = parent.frameGeometry()
                 parent_center = parent_geo.center()

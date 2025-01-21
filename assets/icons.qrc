@@ -3,9 +3,15 @@
     <file>icons/chat.ico</file>
   </qresource>
   <qresource prefix="buttons">
+    <file>icons/paper.png</file>
+    <file>icons/document.png</file>
     <file>icons/send-message.png</file>
   </qresource>
   <qresource prefix="widget">
+    <file>icons/multiply.png</file>
+    <file>icons/google-docs.png</file>
+    <file>icons/smile.png</file>
+    <file>icons/clear.png</file>
     <file>icons/cleaning.png</file>
     <file>icons/padlock.png</file>
   </qresource>

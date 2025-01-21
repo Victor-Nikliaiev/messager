@@ -7,6 +7,7 @@ import json
 HOST = "0.0.0.0"
 PORT = 1060
 LISTENER_LIMIT = 5
+
 active_clients: List[Tuple[str, socket.socket]] = []
 message_lock = threading.Lock()
 typing_lock = threading.Lock()
