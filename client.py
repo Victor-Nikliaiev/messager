@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import platform
@@ -6,7 +5,7 @@ import re
 import socket
 import threading
 import sys
-import time
+
 
 from PySide6 import QtCore as qtc
 from PySide6 import QtWidgets as qtw
@@ -21,6 +20,7 @@ from tools.toolkit import Tools as t
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import subprocess
 import sys
+import tempfile
 
 
 class PROTO:  # PROTOCOL
@@ -32,6 +32,9 @@ class PROTO:  # PROTOCOL
     FILE = "FILE"
     MSG = "MSG"
     EMPTY = ""
+
+
+mutex = qtc.QMutex()
 
 
 class ChatClient(qtw.QWidget, Ui_ChatClient):
@@ -52,6 +55,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         self.typing_list = ObservableSet()
         self.connection_closed = False
+        self.tfile_paths = []  # temp file paths
 
         self.typing_list.set_add_listener(self.typing_list_handler)
         self.typing_list.set_remove_listener(self.typing_list_handler)
@@ -70,6 +74,8 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.in_message.setAudioOutput(self.audio_output)
         self.in_message.setSource("assets/audio/in_message.mp3")
         self.send_file_pushButton.clicked.connect(self.show_menu)
+
+        sm.start_send_file.connect_method(self.send_file_handler)
 
     def setupCredentials(self):
         self.host = self._setup_credential(
@@ -178,11 +184,21 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.listen_thread.service_message_received.connect(
             self.handle_received_service_message
         )
-        self.listen_thread.receiving_file.connect(self.handle_receiving_file)
+        # self.listen_thread.receiving_file.connect(self.handle_receiving_file)
+
+        # self.listen_thread.receiving_file.connect(self.start_receive_file_thread)
+        self.listen_thread.free_space_error.connect(self.handle_free_space_error)
+        self.listen_thread.file_received.connect(self.handle_received_file)
+        self.listen_thread.add_tfile_to_rmlist.connect(self.handle_add_tfile_to_rmlist)
         self.listen_thread.start()
+
         self.user_list_listWidget.itemClicked.connect(self.handle_on_user_click)
 
-        threading.Thread(target=ClipboardClearingThread(self).run, daemon=True).start()
+    def start_receive_file_thread(self, filename, filesize):
+        self.receive_file_thread = ReceiveFileThread(
+            self.client_socket, filename, filesize
+        )
+        self.receive_file_thread.start()
 
     def handle_on_user_click(self, item: qtw.QListWidgetItem):
         username = item.text()
@@ -191,6 +207,9 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         self.message_lineEdit.setText(self.message_lineEdit.text() + f"@{username}")
         self.message_lineEdit.setFocus()
+
+    def handle_add_tfile_to_rmlist(self, tfile_path):
+        self.tfile_paths.append(tfile_path)
 
     def show_popup(self, message, duration=2000, critical=False):
         self.popup = PopupWindow(message, duration, critical)
@@ -279,7 +298,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             return match.group(0)  # Return the full match (with "@")
         return None  # No nickname found
 
-    def format_message(self, username: str, message: str) -> qtw.QLabel:
+    def format_message(self, username: str, message: str, clickable=False):
         username_color = "#0887aa"
         message_color = "#0cb482"
         own_nickname_color = "#c13310"
@@ -297,9 +316,16 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                     # If current nickname was mentioned in the chat, play audio notification
                     self.in_message.play()
 
-        label = qtw.QLabel(
+        text_decorator = ""
+
+        if clickable:
+            text_decorator = "text-decoration: underline; font-weight: bold;"
+            message_color = "#9b44b3"
+
+        label = ClickableLabel(
             f'<span style="color:{username_color}; font-weight:bold;">[{username}]</span>: '
-            f'<span style="color:{message_color};">{message}</span>'
+            f'<span style="color:{message_color};{text_decorator}">{message}</span>',
+            clickable=clickable,
         )
 
         label.setText(label.text().replace("\n", "<br>"))
@@ -324,6 +350,41 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             # self.remove_from_typing_list(data)
             self.typing_list.discard(data)
 
+    def handle_received_file(self, temp_file_path, filename, username):
+        print("Finish line:")
+        print("Temp file path:", temp_file_path)
+        print("Filename:", filename)
+        print("Sender:", username)
+        self.add_file_link_to_chat(temp_file_path, filename, username)
+
+    def handle_free_space_error(self):
+        print("Free space error...")
+
+    def add_file_link_to_chat(self, temp_filepath, filename, username):
+        def save_file():
+            save_path, _ = qtw.QFileDialog.getSaveFileName(None, "Save File", filename)
+            if save_path:
+                with open(temp_filepath, "rb") as temp_file, open(save_path, "wb") as f:
+                    while chunk := temp_file.read(4096):
+                        f.write(chunk)
+                print(f"File saved as {save_path}")
+
+        item = qtw.QListWidgetItem()
+
+        label = self.format_message(username, f"{filename}", clickable=True)
+        label.clicked.connect(save_file)
+        item.setSizeHint(label.sizeHint())
+
+        # label.setSizePolicy(item.sizeHint())
+
+        # label.setFixedSize(item_size)
+        # label.setMaximumHeight(item.sizeHint().height())
+        self.message_box_listWidget.addItem(item)
+        self.message_box_listWidget.setItemWidget(item, label)
+        self.message_box_listWidget.scrollToBottom()
+
+        # Example: Add this link to a QListWidget or UI element in your chat
+
     def handle_server_shutdown(self):
         self.show_popup(
             "Server was shut down. Connection closed.", 3600000, critical=True
@@ -331,8 +392,15 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.client_socket.close()
         self.setEnabled(False)
 
-    def handle_receiving_file(self):
-        pass
+    # def handle_receiving_file(self, filename, file_size):
+    #     print(f"Receiving file: {filename} ({file_size} bytes)")
+    #     file_data = bytearray()
+    #     while True:
+    #         chunk = self.client_socket.recv(4096)
+    #         if not chunk:  # File transfer complete
+    #             break
+    #         file_data.extend(chunk)
+    #     print(f"Received file: {filename}")
 
     def update_user_list(self, data):
         self.user_list_listWidget.clear()
@@ -346,7 +414,13 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.client_socket.close()
         self.listen_thread.terminate()
         self.listen_thread.wait()
+        self.delete_tfiles()
+        threading.Thread(target=ClipboardClearingThread(self).run, daemon=True).start()
         event.accept()
+
+    def delete_tfiles(self):
+        for path in self.tfile_paths:
+            os.remove(path)
 
     def handle_typing(self):
         threading.Thread(target=self.send_typing_status).start()
@@ -376,6 +450,11 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         self.typing_list_label.setText(message)
 
+    def send_file_handler(self, filepath):
+        print("AU!! send_file_handler")
+        self.send_file_thread = SendFileThread(self.client_socket, filepath)
+        self.send_file_thread.start()
+
     def clear_chat(self):
         self.message_box_listWidget.clear()
 
@@ -383,7 +462,10 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 class ListenThread(qtc.QThread):
     client_message_received = qtc.Signal(str, str)
     service_message_received = qtc.Signal(str, str)
-    receiving_file = qtc.Signal(bytes)
+    # receiving_file = qtc.Signal(str, int)
+    file_received = qtc.Signal(str, str, str)
+    free_space_error = qtc.Signal()
+    add_tfile_to_rmlist = qtc.Signal(str)
 
     def __init__(self, client_socket: socket.socket):
         super().__init__()
@@ -393,33 +475,56 @@ class ListenThread(qtc.QThread):
     def run(self):
         while True:
             try:
-                protocol = self.client_socket.recv(10).decode().strip()
+                with qtc.QMutexLocker(mutex):
+                    protocol = self.client_socket.recv(10).decode().strip()
 
-                if protocol == PROTO.EMPTY:
-                    self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
+                    if protocol == PROTO.EMPTY:
+                        self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
 
-                if protocol == PROTO.MSG:
-                    username_length = self.get_received_length()
-                    username = self.get_received_data(username_length)
-                    message_length = self.get_received_length()
-                    message = self.get_received_data(message_length)
+                    if protocol == PROTO.MSG:
+                        username_length = self.get_received_length()
+                        username = self.get_received_data(username_length)
+                        message_length = self.get_received_length()
+                        message = self.get_received_data(message_length)
 
-                    self.client_message_received.emit(username, message)
+                        self.client_message_received.emit(username, message)
 
-                if protocol == PROTO.UPD_ULIST:
-                    user_list_length = self.get_received_length()
-                    user_list = self.get_received_data(user_list_length)
-                    self.service_message_received.emit(PROTO.UPD_ULIST, user_list)
+                    if protocol == PROTO.UPD_ULIST:
+                        user_list_length = self.get_received_length()
+                        user_list = self.get_received_data(user_list_length)
+                        self.service_message_received.emit(PROTO.UPD_ULIST, user_list)
 
-                if protocol == PROTO.TYPING:
-                    username_length = self.get_received_length()
-                    username = self.get_received_data(username_length)
-                    self.service_message_received.emit(PROTO.TYPING, username)
+                    if protocol == PROTO.TYPING:
+                        username_length = self.get_received_length()
+                        username = self.get_received_data(username_length)
+                        self.service_message_received.emit(PROTO.TYPING, username)
 
-                if protocol == PROTO.NO_TYPING:
-                    username_length = self.get_received_length()
-                    username = self.get_received_data(username_length)
-                    self.service_message_received.emit(PROTO.NO_TYPING, username)
+                    if protocol == PROTO.NO_TYPING:
+                        username_length = self.get_received_length()
+                        username = self.get_received_data(username_length)
+                        self.service_message_received.emit(PROTO.NO_TYPING, username)
+
+                    if protocol == PROTO.FILE:
+                        username_length = self.get_received_length()
+                        username = self.get_received_data(username_length)
+                        filename_length = self.get_received_length()
+                        filename = self.get_received_data(filename_length)
+                        file_size = int(self.get_received_data(10))
+                        # self.receiving_file.emit(filename, file_size)
+                        # self.receiving_file_thread = ReceiveFileThread(
+                        #     self.client_socket, filename, file_size
+                        # )
+                        # self.receiving_file_thread.start()
+                        free_disk_space = self.get_free_disk_space()
+                        print("Free disk space:", free_disk_space)
+
+                        if free_disk_space <= file_size:
+                            self.free_space_error.emit()
+                            continue
+
+                        temp_file_path = self.receive_file(file_size)
+                        self.add_tfile_to_rmlist.emit(temp_file_path)
+                        self.file_received.emit(temp_file_path, filename, username)
 
             except Exception as e:
                 print(e)
@@ -431,6 +536,73 @@ class ListenThread(qtc.QThread):
     def get_received_data(self, length):
         return self.client_socket.recv(length).decode().strip()
 
+    def receive_file(self, filesize):
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            received_size = 0
+            while received_size < filesize:
+                chunk = self.client_socket.recv(min(4096, filesize - received_size))
+                if not chunk:
+                    break
+                received_size += len(chunk)
+                temp_file.write(chunk)
+        return temp_file.name
+
+    def get_free_disk_space(path=None):
+        if os.name == "nt":  # Windows
+            path = "C:\\"
+        else:
+            path = "/"
+        statvfs = os.statvfs(path)
+        free_space = statvfs.f_bavail * statvfs.f_frsize  # Free blocks * block size
+        return free_space  # Free space in bytes
+
+
+class SendFileThread(qtc.QThread):
+    def __init__(self, client_socket: socket.socket, filepath):
+        super().__init__()
+        self.setTerminationEnabled(True)
+
+        self.client_socket = client_socket
+        self.filepath = filepath
+
+    def run(self):
+        print("SendFileThread", self.filepath)
+
+        protocol = PROTO.FILE.ljust(10)
+        filename: str = os.path.basename(self.filepath)
+        filename_length = f"{len(filename.encode()):04}"
+        file_size = os.path.getsize(self.filepath)
+        print("Sending filesize: ", file_size)
+        file_size = f"{file_size:010}"
+
+        file_payload = f"{protocol}{filename_length}{filename}{file_size}"
+        print(file_payload)
+        self.client_socket.sendall(file_payload.encode())
+
+        with open(self.filepath, "rb") as file:
+            self.client_socket.sendfile(file)
+
+
+class ReceiveFileThread(qtc.QThread):
+    def __init__(self, client_socket: socket.socket, filename, filesize):
+        super().__init__()
+        self.setTerminationEnabled(True)
+
+        self.client_socket = client_socket
+        self.filename = filename
+        self.filesize = filesize
+
+    def run(self):
+        print("From ReceiveFileThread")
+
+        file_data = bytearray()
+        while True:
+            chunk = self.client_socket.recv(4096)
+            if not chunk:  # File transfer complete
+                break
+            file_data.extend(chunk)
+        print(f"Received file: {self.filename}")
+
 
 class ClipboardClearingThread:
     def __init__(self, client_instance: ChatClient):
@@ -438,17 +610,15 @@ class ClipboardClearingThread:
 
     def run(self):
         if platform.system() == "Linux":
-            if self.is_xclip_avaliable() is False:
+            if self.is_xclip_available() is False:
                 self.show_popup()
                 return
 
-        while True:
-            clipboard_content = pyperclip.paste()
-            if clipboard_content:
-                pyperclip.copy("")
-            time.sleep(1)
+        clipboard_content = pyperclip.paste()
+        if clipboard_content:
+            pyperclip.copy("")
 
-    def is_xclip_avaliable(self):
+    def is_xclip_available(self):
         try:
             subprocess.run(["xclip", "-version"], check=True, stdout=subprocess.DEVNULL)
             return True
@@ -531,6 +701,24 @@ class ObservableSet(set):
 
         if self._remove_listener:
             self._remove_listener()
+
+
+class ClickableLabel(qtw.QLabel):
+    clicked = qtc.Signal()
+
+    def __init__(self, *args, clickable=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.clickable = clickable
+        if self.clickable:
+            self.setMouseTracking(True)
+            self.setCursor(qtc.Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if self.clickable:
+            if event.button() == qtc.Qt.LeftButton:
+                self.clicked.emit()
+        else:
+            event.accept()
 
 
 def main():

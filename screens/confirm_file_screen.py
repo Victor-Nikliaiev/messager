@@ -16,6 +16,10 @@ class ConfirmFileScreen(qtw.QWidget, Ui_ConfirmFile):
         self.updateUi()
 
         self.cancel_pushButton.clicked.connect(self.close)
+        self.send_pushButton.clicked.connect(
+            lambda: sm.start_send_file.signal.emit(sm.dropped_file_path.data)
+        )
+        self.send_pushButton.clicked.connect(self.close)
 
     def updateUi(self):
         self.setWindowFlags(qtc.Qt.FramelessWindowHint)

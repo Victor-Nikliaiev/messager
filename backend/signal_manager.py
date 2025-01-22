@@ -28,6 +28,7 @@ class DataSignal(qtc.QObject):
 
 class DataSignalManager:
     dropped_file_path = DataSignal()
+    start_send_file = DataSignal()
 
 
 sm = DataSignalManager()

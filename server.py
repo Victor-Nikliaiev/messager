@@ -47,6 +47,8 @@ def listen_for_messages(client_socket: socket.socket, username):
     while True:
         header = client_socket.recv(10).decode().strip()
 
+        print("Server received header:", header)
+
         if header == PROTO.EMPTY:
             client_socket.close()
             active_clients.remove((username, client_socket))
@@ -66,6 +68,9 @@ def listen_for_messages(client_socket: socket.socket, username):
             handle_typing_status()
 
         if header == PROTO.FILE:
+            # threading.Thread(
+            #     target=forward_file_chunks, args=(client_socket, username)
+            # ).start()
             forward_file_chunks(client_socket, username)
 
 
@@ -138,15 +143,16 @@ def receive_client_message(client_socket):
     return message
 
 
-def forward_file_chunks(client_socket: socket.socket, username):
+def forward_file_chunks(client_socket: socket.socket, username: str):
     filename_length = int(client_socket.recv(4).decode().strip())
     filename = client_socket.recv(filename_length).decode()
+    print("Server: Received filename:", filename)
     file_size = int(client_socket.recv(10).decode().strip())
 
-    file_payload = (
-        f"{PROTO.FILE.ljust(10)}{filename_length:04}{filename}{file_size:010}"
-    )
-    broadcast_message("SERVER", f"{username} is sending a file: {filename}")
+    username_size = len(username.encode())
+
+    file_payload = f"{PROTO.FILE.ljust(10)}{username_size:04}{username}{filename_length:04}{filename}{file_size:010}"
+    broadcast_message("SERVER", f"{username} is sending a file: {filename}...")
 
     for client in active_clients:
         user_socket = client[1]
@@ -185,10 +191,6 @@ def forward_file_chunks(client_socket: socket.socket, username):
                 user_socket.send(chunk)
             except Exception as e:
                 print("Error sending file chunk: {e}")
-
-    broadcast_message(
-        "SERVER", f"{username} finished sending {filename}. Click the link to download."
-    )
 
 
 @debounce(1.0)
