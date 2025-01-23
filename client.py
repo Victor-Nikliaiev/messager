@@ -15,24 +15,14 @@ import pyperclip
 from assets.emoji.QCustomEmojiPicker import QCustomEmojiPicker
 from assets.ui.chat_client_ui import Ui_ChatClient
 from backend import sm
+from backend import PROTO
+from backend.encryption.encryption import EncryptionManager
 from screens.confirm_file_screen import ConfirmFileScreen
 from tools.toolkit import Tools as t
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import subprocess
 import sys
 import tempfile
-
-
-class PROTO:  # PROTOCOL
-    UPD_ULIST = "UPD_ULIST"
-    USER_NAME = "USER_NAME"
-    NO_TYPING = "NO_TYPING"
-    SRV_DOWN = "SRV_DOWN"
-    TYPING = "TYPING"
-    FILE = "FILE"
-    PRIV_MSG = "PRIV_MSG"
-    MSG = "MSG"
-    EMPTY = ""
 
 
 mutex = qtc.QMutex()
@@ -84,6 +74,9 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         )
         self.port = int(self._setup_credential("Enter port:", "Port", text="1060"))
         self.username = self._setup_credential("Enter your username:", "Username")
+
+        self.encryption_manager = EncryptionManager()
+        self.server_public_key = None
 
     def updateUi(self):
         self.setWindowTitle(f"Encrypted Chat Client v1.0 - [ {self.username} ]")
@@ -177,6 +170,14 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         payload = f"{PROTO.USER_NAME.ljust(10)}{self.username_length:04}{self.username}"
         self.client_socket.sendall(payload.encode())
 
+        public_key_bytes = self.encryption_manager.serialize_public_key(
+            self.encryption_manager.public_key
+        )
+        public_key_length = len(public_key_bytes)
+        payload = f"{PROTO.PUB_KEY.ljust(10)}{public_key_length:04}"
+
+        self.client_socket.sendall(payload.encode() + public_key_bytes)
+
         self.listen_thread = ListenThread(self.client_socket)
 
         self.listen_thread.client_message_received.connect(
@@ -185,6 +186,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.listen_thread.service_message_received.connect(
             self.handle_received_service_message
         )
+        self.listen_thread.pub_key_received.connect(self.handle_received_pub_key)
         # self.listen_thread.receiving_file.connect(self.handle_receiving_file)
 
         # self.listen_thread.receiving_file.connect(self.start_receive_file_thread)
@@ -261,6 +263,11 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         data_length = len(data.encode())
         payload = f"{protocol}{data_length:04}{data}"
         self.client_socket.sendall(payload.encode())
+
+    def handle_received_pub_key(self, public_key_bytes: bytes):
+        self.server_public_key = self.encryption_manager.deserialize_public_key(
+            public_key_bytes
+        )
 
     def handle_received_client_message(self, username, message: str):
 
@@ -486,6 +493,7 @@ class ListenThread(qtc.QThread):
     file_received = qtc.Signal(str, str, str)
     free_space_error = qtc.Signal()
     add_tfile_to_rmlist = qtc.Signal(str)
+    pub_key_received = qtc.Signal(bytes)
 
     def __init__(self, client_socket: socket.socket):
         super().__init__()
@@ -545,6 +553,11 @@ class ListenThread(qtc.QThread):
                         temp_file_path = self.receive_file(file_size)
                         self.add_tfile_to_rmlist.emit(temp_file_path)
                         self.file_received.emit(temp_file_path, filename, username)
+
+                    if protocol == PROTO.PUB_KEY:
+                        key_length = self.get_received_length()
+                        pub_key_bytes = self.client_socket.recv(key_length)
+                        self.pub_key_received.emit(pub_key_bytes)
 
             except Exception as e:
                 print(e)

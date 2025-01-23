@@ -6,20 +6,24 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from backend import PROTO
 from backend import CONSTS
+from backend.encryption import EncryptionManager
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 class Server:
     def __init__(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.active_clients: List[Tuple[str, socket.socket]] = []
+        self.active_clients: List[Tuple[str, socket.socket, rsa.RSAPublicKey]] = []
         self.typing_users = set()
         self.executor = ThreadPoolExecutor()
+        self.encryption_manager = EncryptionManager()
 
     def run(self):
         try:
             self.server_socket.bind((CONSTS.HOST, CONSTS.PORT))
-            self.server_socket.listen(CONSTS.LISTENER_LIMIT)
             print(f"Running the server on host: {CONSTS.HOST}, port: {CONSTS.PORT}")
+
+            self.server_socket.listen(CONSTS.LISTENER_LIMIT)
 
             while True:
                 client_socket, client_address = self.server_socket.accept()
@@ -40,6 +44,8 @@ class Server:
             self.server_socket.close()
 
     def client_handler(self, client_socket: socket.socket):
+        username = None
+
         while True:
             protocol = client_socket.recv(10).decode().strip()
 
@@ -55,7 +61,20 @@ class Server:
                 if not username:
                     return
 
-                self.active_clients.append((username, client_socket))
+            if protocol == PROTO.PUB_KEY:
+                public_key_length = int(client_socket.recv(4).decode().strip())
+                public_key_bytes = client_socket.recv(public_key_length)
+
+                if not public_key_bytes:
+                    print("Public key is required.")
+                    return
+
+                public_key = self.encryption_manager.deserialize_public_key(
+                    public_key_bytes
+                )
+
+                print("Client public key:", public_key)
+                self.active_clients.append((username, client_socket, public_key))
                 active_clients_list = [client[0] for client in self.active_clients]
                 print(f"{username} joined in.")
                 self.broadcast_message(
@@ -64,6 +83,8 @@ class Server:
                 self.broadcast_service_message(
                     PROTO.UPD_ULIST, json.dumps(active_clients_list)
                 )
+
+                self.send_public_key_to_client(client_socket)
                 break
 
         self.executor.submit(self.listen_for_messages, client_socket, username)
@@ -74,6 +95,16 @@ class Server:
         #         username,
         #     ),
         # ).start()
+
+    def send_public_key_to_client(self, client_socket: socket.socket):
+        protocol = PROTO.PUB_KEY
+        public_key_bytes = self.encryption_manager.serialize_public_key(
+            self.encryption_manager.public_key
+        )
+        public_key_length = len(public_key_bytes)
+
+        payload = f"{protocol.ljust(10)}{public_key_length:04}"
+        client_socket.sendall(payload.encode() + public_key_bytes)
 
     def listen_for_messages(self, client_socket: socket.socket, username):
         while True:

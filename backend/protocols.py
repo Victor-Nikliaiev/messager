@@ -1,4 +1,5 @@
 class PROTO:  # PROTOCOL
+    PUB_KEY = "PUB_KEY"
     UPD_ULIST = "UPD_ULIST"
     USER_NAME = "USER_NAME"
     NO_TYPING = "NO_TYPING"
