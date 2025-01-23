@@ -30,6 +30,7 @@ class PROTO:  # PROTOCOL
     SRV_DOWN = "SRV_DOWN"
     TYPING = "TYPING"
     FILE = "FILE"
+    PRIV_MSG = "PRIV_MSG"
     MSG = "MSG"
     EMPTY = ""
 
@@ -223,6 +224,12 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         if msg == "":
             return
 
+        if msg.startswith("@"):
+            nickname = self.extract_nickname(msg)
+            if nickname:
+                self.send_private_message(nickname, msg)
+                return
+
         protocol = PROTO.MSG.ljust(10)
         msg_length = len(msg.encode())
 
@@ -234,6 +241,20 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             self.show_popup(e, 5000, critical=True)
         finally:
             self.message_lineEdit.clear()
+
+    def send_private_message(self, nickname: str, message: str):
+        protocol = PROTO.PRIV_MSG.ljust(10)
+        message = message.replace(nickname, "")
+        nickname = nickname[1:]
+        nickname_length = len(nickname.encode())
+        message_length = len(message.encode())
+
+        payload = f"{protocol}{nickname_length:04}{nickname}{message_length:04}"
+        print(payload + message)
+
+        self.client_socket.sendall(payload.encode())
+        self.client_socket.sendall(message.encode())
+        self.message_lineEdit.clear()
 
     def send_service_message(self, protocol: str, data: str):
         protocol = protocol.ljust(10)
@@ -358,7 +379,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.add_file_link_to_chat(temp_file_path, filename, username)
 
     def handle_free_space_error(self):
-        print("Free space error...")
+        qtw.QMessageBox.critical(self, "Drive Error", "Free space is not enough!")
 
     def add_file_link_to_chat(self, temp_filepath, filename, username):
         def save_file():
@@ -451,7 +472,6 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.typing_list_label.setText(message)
 
     def send_file_handler(self, filepath):
-        print("AU!! send_file_handler")
         self.send_file_thread = SendFileThread(self.client_socket, filepath)
         self.send_file_thread.start()
 

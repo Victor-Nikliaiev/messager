@@ -21,6 +21,7 @@ class PROTO:  # PROTOCOL
     SRV_DOWN = "SRV_DOWN"
     TYPING = "TYPING"
     FILE = "FILE"
+    PRIV_MSG = "PRIV_MSG"
     MSG = "MSG"
     EMPTY = ""
 
@@ -45,11 +46,9 @@ def debounce(wait_time):
 
 def listen_for_messages(client_socket: socket.socket, username):
     while True:
-        header = client_socket.recv(10).decode().strip()
+        protocol = client_socket.recv(10).decode().strip()
 
-        print("Server received header:", header)
-
-        if header == PROTO.EMPTY:
+        if protocol == PROTO.EMPTY:
             client_socket.close()
             active_clients.remove((username, client_socket))
             active_clients_list = [client[0] for client in active_clients]
@@ -58,20 +57,66 @@ def listen_for_messages(client_socket: socket.socket, username):
             print(f"{username} left the chat.")
             break
 
-        if header == PROTO.MSG:
+        if protocol == PROTO.MSG:
             message = receive_client_message(client_socket)
             broadcast_message(username, message)
 
-        if header == PROTO.TYPING:
+        if protocol == PROTO.TYPING:
             typing_users.add(username)
-            broadcast_service_message(header, username)
+            broadcast_service_message(protocol, username)
             handle_typing_status()
 
-        if header == PROTO.FILE:
+        if protocol == PROTO.FILE:
             # threading.Thread(
             #     target=forward_file_chunks, args=(client_socket, username)
             # ).start()
             forward_file_chunks(client_socket, username)
+        if protocol == PROTO.PRIV_MSG:
+            receiver_name_length = receive_length(client_socket)
+            receiver_name = receive_data(client_socket, receiver_name_length)
+            message_length = receive_length(client_socket)
+            message = receive_data(client_socket, message_length)
+
+            active_clients_list = [client[0] for client in active_clients]
+
+            if receiver_name not in active_clients_list:
+                send_private_message(
+                    client_socket,
+                    "SERVER",
+                    username,
+                    f"User '{receiver_name}' is not online. Aborted.",
+                )
+                continue
+
+            receiver_socket = active_clients[active_clients_list.index(receiver_name)][
+                1
+            ]
+
+            send_private_message(receiver_socket, username, receiver_name, message)
+            send_private_message(client_socket, username, receiver_name, message)
+
+
+def send_private_message(
+    receiver_socket: socket.socket, sender_username: str, receiver: str, message: str
+):
+    protocol = PROTO.MSG.ljust(10)
+    sender_username_length = len(sender_username.encode())
+
+    message = f"[DM@{receiver}]: {message}"
+    message_length = len(message.encode())
+
+    payload = (
+        f"{protocol}{sender_username_length:04}{sender_username}{message_length:04}"
+    )
+    receiver_socket.sendall(payload.encode() + message.encode())
+
+
+def receive_length(client_socket: socket.socket):
+    return int(client_socket.recv(4).decode().strip())
+
+
+def receive_data(client_socket: socket.socket, length: int):
+    return client_socket.recv(length).decode().strip()
 
 
 # def send_message_to_client(client_socket: socket.socket, message: str):
@@ -108,12 +153,12 @@ def broadcast_message(sender_username, message):
             active_clients.remove(client)
 
 
-def broadcast_service_message(header, data):
+def broadcast_service_message(protocol, data):
     # Send protocol
     # Send data length
     # Send data
 
-    protocol = header.ljust(10)
+    protocol = protocol.ljust(10)
     data_length = len(data.encode())
     data_length = f"{data_length:04}"
     payload = f"{protocol}{data_length}{data}"
@@ -191,6 +236,9 @@ def forward_file_chunks(client_socket: socket.socket, username: str):
                 user_socket.send(chunk)
             except Exception as e:
                 print("Error sending file chunk: {e}")
+    send_private_message(
+        client_socket, "SERVER", username, "Your file has been sent successfully."
+    )
 
 
 @debounce(1.0)
@@ -202,14 +250,14 @@ def handle_typing_status():
 
 def client_handler(client_socket: socket.socket):
     while True:
-        header = client_socket.recv(10).decode().strip()
+        protocol = client_socket.recv(10).decode().strip()
 
-        if header == PROTO.EMPTY:
+        if protocol == PROTO.EMPTY:
             client_socket.close()
             print("Client username was empty. Client has been disconnected.")
             return
 
-        if header == PROTO.USER_NAME:
+        if protocol == PROTO.USER_NAME:
             username_length = int(client_socket.recv(4).decode().strip())
             username = client_socket.recv(username_length).decode().strip()
 
