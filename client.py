@@ -75,7 +75,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.port = int(self._setup_credential("Enter port:", "Port", text="1060"))
         self.username = self._setup_credential("Enter your username:", "Username")
 
-        self.encryption_manager = EncryptionManager()
+        self.encryption_manager = EncryptionManager(aes=True)
         self.server_public_key = None
 
     def updateUi(self):
@@ -166,10 +166,12 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                 duration=60000,
             )
 
+        ## Sending username
         self.username_length = len(self.username.encode())
         payload = f"{PROTO.USER_NAME.ljust(10)}{self.username_length:04}{self.username}"
         self.client_socket.sendall(payload.encode())
 
+        ## Sending public key
         public_key_bytes = self.encryption_manager.serialize_public_key(
             self.encryption_manager.public_key
         )
@@ -177,6 +179,25 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         payload = f"{PROTO.PUB_KEY.ljust(10)}{public_key_length:04}"
 
         self.client_socket.sendall(payload.encode() + public_key_bytes)
+
+        ### Getting server public key
+        protocol = self.client_socket.recv(10).decode().strip()
+        if protocol == PROTO.PUB_KEY:
+            key_length = int(self.client_socket.recv(4).decode().strip())
+            server_public_key_bytes = self.client_socket.recv(key_length)
+            self.server_public_key = self.encryption_manager.deserialize_public_key(
+                server_public_key_bytes
+            )
+
+        ### Sending encrypted AES key
+
+        encrypted_aes_key = self.encryption_manager.encrypt_aes_key(
+            self.encryption_manager.aes_key, self.server_public_key
+        )
+        encrypted_aes_length = len(encrypted_aes_key)
+        payload = f"{PROTO.AES_KEY.ljust(10)}{encrypted_aes_length:04}"
+        self.client_socket.sendall(payload.encode() + encrypted_aes_key)
+        ###
 
         self.listen_thread = ListenThread(self.client_socket)
 
@@ -554,10 +575,10 @@ class ListenThread(qtc.QThread):
                         self.add_tfile_to_rmlist.emit(temp_file_path)
                         self.file_received.emit(temp_file_path, filename, username)
 
-                    if protocol == PROTO.PUB_KEY:
-                        key_length = self.get_received_length()
-                        pub_key_bytes = self.client_socket.recv(key_length)
-                        self.pub_key_received.emit(pub_key_bytes)
+                    # if protocol == PROTO.PUB_KEY:
+                    #     key_length = self.get_received_length()
+                    #     pub_key_bytes = self.client_socket.recv(key_length)
+                    #     self.pub_key_received.emit(pub_key_bytes)
 
             except Exception as e:
                 print(e)

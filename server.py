@@ -13,7 +13,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 class Server:
     def __init__(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.active_clients: List[Tuple[str, socket.socket, rsa.RSAPublicKey]] = []
+        self.active_clients: List[
+            Tuple[str, socket.socket, bytes, rsa.RSAPublicKey]
+        ] = []
         self.typing_users = set()
         self.executor = ThreadPoolExecutor()
         self.encryption_manager = EncryptionManager()
@@ -45,6 +47,7 @@ class Server:
 
     def client_handler(self, client_socket: socket.socket):
         username = None
+        public_key = None
 
         while True:
             protocol = client_socket.recv(10).decode().strip()
@@ -72,9 +75,18 @@ class Server:
                 public_key = self.encryption_manager.deserialize_public_key(
                     public_key_bytes
                 )
+                self.send_server_public_key_to_client(client_socket)
 
-                print("Client public key:", public_key)
-                self.active_clients.append((username, client_socket, public_key))
+            if protocol == PROTO.AES_KEY:
+                encrypted_aes_key_length = self.receive_length(client_socket)
+                encrypted_aes_key = client_socket.recv(encrypted_aes_key_length)
+                decrypted_aes_key = self.encryption_manager.decrypt_aes_key(
+                    encrypted_aes_key, self.encryption_manager.private_key
+                )
+                self.active_clients.append(
+                    (username, client_socket, decrypted_aes_key, public_key)
+                )
+
                 active_clients_list = [client[0] for client in self.active_clients]
                 print(f"{username} joined in.")
                 self.broadcast_message(
@@ -83,8 +95,6 @@ class Server:
                 self.broadcast_service_message(
                     PROTO.UPD_ULIST, json.dumps(active_clients_list)
                 )
-
-                self.send_public_key_to_client(client_socket)
                 break
 
         self.executor.submit(self.listen_for_messages, client_socket, username)
@@ -96,7 +106,12 @@ class Server:
         #     ),
         # ).start()
 
-    def send_public_key_to_client(self, client_socket: socket.socket):
+    def get_client_from_list(self, username):
+        for client in self.active_clients:
+            if client[0] == username:
+                return client
+
+    def send_server_public_key_to_client(self, client_socket: socket.socket):
         protocol = PROTO.PUB_KEY
         public_key_bytes = self.encryption_manager.serialize_public_key(
             self.encryption_manager.public_key
@@ -112,7 +127,10 @@ class Server:
 
             if protocol == PROTO.EMPTY:
                 client_socket.close()
-                self.active_clients.remove((username, client_socket))
+
+                client = self.get_client_from_list(username)
+
+                self.active_clients.remove(client)
                 active_clients_list = [client[0] for client in self.active_clients]
                 self.broadcast_service_message(
                     PROTO.UPD_ULIST, json.dumps(active_clients_list)

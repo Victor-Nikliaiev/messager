@@ -5,8 +5,10 @@ import os
 
 
 class EncryptionManager:
-    def __init__(self):
+    def __init__(self, aes=False):
         self.private_key, self.public_key = self.generate_rsa_keys()
+        if aes:
+            self.aes_key = self.generate_aes_key()
 
     # Generate RSA key pair
     def generate_rsa_keys(self):
@@ -14,8 +16,11 @@ class EncryptionManager:
         public_key = private_key.public_key()
         return private_key, public_key
 
+    def generate_aes_key(self):
+        return os.urandom(32)
+
     # Encrypt AES key with RSA public key
-    def encrypt_aes_key(self, aes_key, public_key):
+    def encrypt_aes_key(self, aes_key, public_key) -> bytes:
         encrypted_key = public_key.encrypt(
             aes_key,
             padding.OAEP(
