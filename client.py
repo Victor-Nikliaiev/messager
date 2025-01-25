@@ -75,7 +75,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.port = int(self._setup_credential("Enter port:", "Port", text="1060"))
         self.username = self._setup_credential("Enter your username:", "Username")
 
-        self.encryption_manager = EncryptionManager(aes=True)
+        self.em = EncryptionManager(aes=True)
         self.server_public_key = None
 
     def updateUi(self):
@@ -165,16 +165,8 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                 critical=True,
                 duration=60000,
             )
-
-        ## Sending username
-        self.username_length = len(self.username.encode())
-        payload = f"{PROTO.USER_NAME.ljust(10)}{self.username_length:04}{self.username}"
-        self.client_socket.sendall(payload.encode())
-
         ## Sending public key
-        public_key_bytes = self.encryption_manager.serialize_public_key(
-            self.encryption_manager.public_key
-        )
+        public_key_bytes = self.em.serialize_public_key(self.em.public_key)
         public_key_length = len(public_key_bytes)
         payload = f"{PROTO.PUB_KEY.ljust(10)}{public_key_length:04}"
 
@@ -185,18 +177,23 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         if protocol == PROTO.PUB_KEY:
             key_length = int(self.client_socket.recv(4).decode().strip())
             server_public_key_bytes = self.client_socket.recv(key_length)
-            self.server_public_key = self.encryption_manager.deserialize_public_key(
+            self.server_public_key = self.em.deserialize_public_key(
                 server_public_key_bytes
             )
 
         ### Sending encrypted AES key
-
-        encrypted_aes_key = self.encryption_manager.encrypt_aes_key(
-            self.encryption_manager.aes_key, self.server_public_key
+        encrypted_aes_key = self.em.encrypt_aes_key(
+            self.em.aes_key, self.server_public_key
         )
         encrypted_aes_length = len(encrypted_aes_key)
         payload = f"{PROTO.AES_KEY.ljust(10)}{encrypted_aes_length:04}"
         self.client_socket.sendall(payload.encode() + encrypted_aes_key)
+
+        ### Sending username
+        encrypted_username = self.em.encrypt_text(self.username)
+        username_length = len(encrypted_username)
+        payload = f"{PROTO.USER_NAME.ljust(10)}{username_length:04}{encrypted_username}"
+        self.client_socket.sendall(payload.encode())
         ###
 
         self.listen_thread = ListenThread(self.client_socket)
@@ -229,7 +226,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         if username == self.username:
             return
 
-        self.message_lineEdit.setText(self.message_lineEdit.text() + f"@{username}")
+        self.message_lineEdit.setText(self.message_lineEdit.text() + f"@{username} ")
         self.message_lineEdit.setFocus()
 
     def handle_add_tfile_to_rmlist(self, tfile_path):
@@ -254,9 +251,11 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                 return
 
         protocol = PROTO.MSG.ljust(10)
-        msg_length = len(msg.encode())
 
-        payload = f"{protocol}{msg_length:04}{msg}"
+        encrypted_message = self.em.encrypt_text(msg, self.em.aes_key)
+        msg_length = len(encrypted_message)
+
+        payload = f"{protocol}{msg_length:04}{encrypted_message}"
 
         try:
             self.client_socket.sendall(payload.encode())
@@ -269,14 +268,16 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         protocol = PROTO.PRIV_MSG.ljust(10)
         message = message.replace(nickname, "")
         nickname = nickname[1:]
-        nickname_length = len(nickname.encode())
-        message_length = len(message.encode())
-
-        payload = f"{protocol}{nickname_length:04}{nickname}{message_length:04}"
-        print(payload + message)
+        encrypted_nickname = self.em.encrypt_text(nickname, self.em.aes_key)
+        encrypted_message = self.em.encrypt_text(message, self.em.aes_key)
+        nickname_length = len(encrypted_nickname)
+        message_length = len(encrypted_message)
+        payload = (
+            f"{protocol}{nickname_length:04}{encrypted_nickname}{message_length:04}"
+        )
 
         self.client_socket.sendall(payload.encode())
-        self.client_socket.sendall(message.encode())
+        self.client_socket.sendall(encrypted_message)
         self.message_lineEdit.clear()
 
     def send_service_message(self, protocol: str, data: str):
@@ -286,9 +287,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.client_socket.sendall(payload.encode())
 
     def handle_received_pub_key(self, public_key_bytes: bytes):
-        self.server_public_key = self.encryption_manager.deserialize_public_key(
-            public_key_bytes
-        )
+        self.server_public_key = self.em.deserialize_public_key(public_key_bytes)
 
     def handle_received_client_message(self, username, message: str):
 
@@ -326,7 +325,10 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         item = qtw.QListWidgetItem()
 
-        label = self.format_message(username, message)
+        decrypted_username = self.em.decrypt_text(username, self.em.aes_key)
+        decrypted_message = self.em.decrypt_text(message, self.em.aes_key)
+
+        label = self.format_message(decrypted_username, decrypted_message)
         item.setSizeHint(label.sizeHint())
         # label.setSizePolicy(item.sizeHint())
 

@@ -3,6 +3,17 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import os
 
+ENCRYPTED_CHUNK_SIZE = 32 * 1024  # 32 KB chunks
+ORIGINAL_CHUNK_SIZE = 32_740
+
+
+# chunk = infile.read(CHUNK_SIZE)
+# if len(chunk) < CHUNK_SIZE:
+# chunk += b"\x00" * (CHUNK_SIZE - len(chunk))
+# final size=IV size+plaintext size+tag size
+# 32,768=12+plaintext size+16
+# plaintext size = 32,740
+
 
 class EncryptionManager:
     def __init__(self, aes=False):
@@ -43,18 +54,33 @@ class EncryptionManager:
         )
         return decrypted_key
 
+    ENCRYPTED_CHUNK_SIZE = 32 * 1024  # 32 KB chunks
+    ORIGINAL_CHUNK_SIZE = 32740
+    # chunk = infile.read(CHUNK_SIZE)
+    # if len(chunk) < CHUNK_SIZE:
+    # chunk += b"\x00" * (CHUNK_SIZE - len(chunk))
+    # final size=IV size+plaintext size+tag size
+    # 32,768=12+plaintext size+16
+    # plaintext size = 32,740
+
     # Encrypt message with AES-GCM
-    def encrypt_message(self, message, aes_key):
-        iv = os.urandom(12)  # 12 bytes IV for GCM
-        cipher = Cipher(algorithms.AES(aes_key), modes.GCM(iv))
-        encryptor = cipher.encryptor()
-        ciphertext = encryptor.update(message.encode()) + encryptor.finalize()
-        return iv, encryptor.tag, ciphertext
+    def encrypt_text(self, text, aes_key):
+        iv = os.urandom(12)  # Generate a 12-byte IV
+        encryptor = Cipher(algorithms.AES(aes_key), modes.GCM(iv)).encryptor()
+
+        ciphertext = encryptor.update(text.encode()) + encryptor.finalize()
+        auth_tag = encryptor.tag  # 16-byte authentication tag
+
+        return iv + ciphertext + auth_tag  # Send all together
 
     # Decrypt message with AES-GCM
-    def decrypt_message(self, iv, tag, ciphertext, aes_key):
-        cipher = Cipher(algorithms.AES(aes_key), modes.GCM(iv, tag))
-        decryptor = cipher.decryptor()
+    def decrypt_text(self, encrypted_data: bytes, aes_key):
+        iv = encrypted_data[:12]  # Extract IV
+        ciphertext = encrypted_data[12:-16]  # Extract ciphertext
+        auth_tag = encrypted_data[-16:]  # Extract tag
+
+        decryptor = Cipher(algorithms.AES(aes_key), modes.GCM(iv, auth_tag)).decryptor()
+
         decrypted_message = decryptor.update(ciphertext) + decryptor.finalize()
         return decrypted_message.decode()
 
@@ -95,6 +121,25 @@ class EncryptionManager:
             f.write(decrypted_data)
 
         print("File decrypted successfully!")
+
+    def encrypt_file_chunk(self, chunk: bytes, aes_key: bytes):
+        iv = os.urandom(12)
+        cipher = Cipher(algorithms.AES(aes_key), modes.GCM(iv))
+        encryptor = cipher.encryptor()
+        cipher_chunk = encryptor.update(chunk) + encryptor.finalize()
+
+        # IV (12 bytes) + TAG (16 bytes) + Cipher chunk to return
+        return iv + encryptor.tag + cipher_chunk
+
+    def decrypt_file_chunk(self, chunk: bytes, aes_key: bytes):
+        iv = chunk[:12]
+        tag = chunk[12:28]
+        cipher_chunk = chunk[28:]
+
+        cipher = Cipher(algorithms.AES(aes_key), modes.GCM(iv, tag))
+        decryptor = cipher.decryptor()
+
+        return decryptor.update(cipher_chunk) + decryptor.finalize()
 
     def serialize_private_key(self, private_key: rsa.RSAPrivateKey) -> bytes:
         return private_key.private_bytes(

@@ -1,4 +1,5 @@
 from functools import wraps
+import os
 import socket
 import threading
 from typing import List, Tuple
@@ -14,11 +15,12 @@ class Server:
     def __init__(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.active_clients: List[
-            Tuple[str, socket.socket, bytes, rsa.RSAPublicKey]
+            Tuple[bytes, socket.socket, bytes, rsa.RSAPublicKey]
         ] = []
         self.typing_users = set()
         self.executor = ThreadPoolExecutor()
-        self.encryption_manager = EncryptionManager()
+        self.em = EncryptionManager()
+        self.aes_key = os.urandom(32)
 
     def run(self):
         try:
@@ -48,6 +50,7 @@ class Server:
     def client_handler(self, client_socket: socket.socket):
         username = None
         public_key = None
+        decrypted_aes_key = None
 
         while True:
             protocol = client_socket.recv(10).decode().strip()
@@ -57,13 +60,6 @@ class Server:
                 print("Client username was empty. Client has been disconnected.")
                 return
 
-            if protocol == PROTO.USER_NAME:
-                username_length = int(client_socket.recv(4).decode().strip())
-                username = client_socket.recv(username_length).decode().strip()
-
-                if not username:
-                    return
-
             if protocol == PROTO.PUB_KEY:
                 public_key_length = int(client_socket.recv(4).decode().strip())
                 public_key_bytes = client_socket.recv(public_key_length)
@@ -72,22 +68,33 @@ class Server:
                     print("Public key is required.")
                     return
 
-                public_key = self.encryption_manager.deserialize_public_key(
-                    public_key_bytes
-                )
+                public_key = self.em.deserialize_public_key(public_key_bytes)
                 self.send_server_public_key_to_client(client_socket)
 
             if protocol == PROTO.AES_KEY:
                 encrypted_aes_key_length = self.receive_length(client_socket)
                 encrypted_aes_key = client_socket.recv(encrypted_aes_key_length)
-                decrypted_aes_key = self.encryption_manager.decrypt_aes_key(
-                    encrypted_aes_key, self.encryption_manager.private_key
-                )
-                self.active_clients.append(
-                    (username, client_socket, decrypted_aes_key, public_key)
+                decrypted_aes_key = self.em.decrypt_aes_key(
+                    encrypted_aes_key, self.em.private_key
                 )
 
-                active_clients_list = [client[0] for client in self.active_clients]
+            if protocol == PROTO.USER_NAME:
+                username_length = int(client_socket.recv(4).decode().strip())
+                username = client_socket.recv(username_length)
+
+                if not username:
+                    return
+
+                username = self.em.decrypt_text(username, decrypted_aes_key)
+                username_encrypted = self.em.encrypt_text(username, self.aes_key)
+                self.active_clients.append(
+                    (username_encrypted, client_socket, decrypted_aes_key, public_key)
+                )
+
+                active_clients_list = [
+                    (self.em.decrypt_text(client[0], self.aes_key))
+                    for client in self.active_clients
+                ]
                 print(f"{username} joined in.")
                 self.broadcast_message(
                     "SERVER", f"{username} have been added to the chat."
@@ -106,16 +113,14 @@ class Server:
         #     ),
         # ).start()
 
-    def get_client_from_list(self, username):
+    def get_client_from_list(self, user_socket: socket.socket):
         for client in self.active_clients:
-            if client[0] == username:
+            if client[1] is user_socket:
                 return client
 
     def send_server_public_key_to_client(self, client_socket: socket.socket):
         protocol = PROTO.PUB_KEY
-        public_key_bytes = self.encryption_manager.serialize_public_key(
-            self.encryption_manager.public_key
-        )
+        public_key_bytes = self.em.serialize_public_key(self.em.public_key)
         public_key_length = len(public_key_bytes)
 
         payload = f"{protocol.ljust(10)}{public_key_length:04}"
@@ -128,58 +133,75 @@ class Server:
             if protocol == PROTO.EMPTY:
                 client_socket.close()
 
-                client = self.get_client_from_list(username)
-
+                client = self.get_client_from_list(client_socket)
                 self.active_clients.remove(client)
-                active_clients_list = [client[0] for client in self.active_clients]
+
+                active_clients_list = [
+                    self.em.decrypt_text(client[0], self.aes_key)
+                    for client in self.active_clients
+                ]
+
                 self.broadcast_service_message(
                     PROTO.UPD_ULIST, json.dumps(active_clients_list)
                 )
                 self.broadcast_message("SERVER", f"{username} left the chat.")
-                print(f"{username} left the chat.")
                 break
 
             if protocol == PROTO.MSG:
-                message = self.receive_client_message(client_socket)
+                message = self.receive_client_message(client_socket, username)
                 self.broadcast_message(username, message)
 
             if protocol == PROTO.TYPING:
-                self.typing_users.add(username)
+                self.typing_users.add(self.em.encrypt_text(username, self.aes_key))
                 self.broadcast_service_message(protocol, username)
                 self.handle_typing_status()
 
             if protocol == PROTO.FILE:
-                # threading.Thread(
-                #     target=forward_file_chunks, args=(client_socket, username)
-                # ).start()
                 self.forward_file_chunks(client_socket, username)
+
             if protocol == PROTO.PRIV_MSG:
-                receiver_name_length = self.receive_length(client_socket)
-                receiver_name = self.receive_data(client_socket, receiver_name_length)
-                message_length = self.receive_length(client_socket)
-                message = self.receive_data(client_socket, message_length)
+                self.receive_private_message(client_socket, username)
 
-                active_clients_list = [client[0] for client in self.active_clients]
+    def receive_private_message(self, client_socket: socket.socket, username: str):
+        receiver_name_length = self.receive_length(client_socket)
+        encrypted_receiver_name = self.receive_data(client_socket, receiver_name_length)
 
-                if receiver_name not in active_clients_list:
-                    self.send_private_message(
-                        client_socket,
-                        "SERVER",
-                        username,
-                        f"User '{receiver_name}' is not online. Aborted.",
-                    )
-                    continue
+        message_length = self.receive_length(client_socket)
+        encrypted_message = self.receive_data(client_socket, message_length)
 
-                receiver_socket = self.active_clients[
-                    active_clients_list.index(receiver_name)
-                ][1]
+        active_clients_list = [
+            self.em.decrypt_text(client[0], self.em.aes_key)
+            for client in self.active_clients
+        ]
 
-                self.send_private_message(
-                    receiver_socket, username, receiver_name, message
-                )
-                self.send_private_message(
-                    client_socket, username, receiver_name, message
-                )
+        decrypted_receiver_name = self.em.decrypt_text(
+            encrypted_receiver_name, self.em.aes_key
+        )
+
+        if decrypted_receiver_name not in active_clients_list:
+            self.send_private_message(
+                client_socket,
+                "SERVER",
+                username,
+                f"User '{decrypted_receiver_name}' is not online. Aborted.",
+            )
+            return
+
+        receiver_socket = self.active_clients[
+            active_clients_list.index(decrypted_receiver_name)
+        ][1]
+        sender_aes_key = self.get_client_from_list(client_socket)[2]
+        decrypted_message = self.em.decrypt_text(encrypted_message, sender_aes_key)
+
+        self.send_private_message(
+            receiver_socket,
+            username,
+            decrypted_receiver_name,
+            decrypted_message,
+        )
+        self.send_private_message(
+            client_socket, username, decrypted_receiver_name, decrypted_message
+        )
 
     @staticmethod
     def debounce(wait_time):
@@ -203,25 +225,28 @@ class Server:
         self,
         receiver_socket: socket.socket,
         sender_username: str,
-        receiver: str,
+        receiver_username: str,
         message: str,
     ):
         protocol = PROTO.MSG.ljust(10)
-        sender_username_length = len(sender_username.encode())
+        receiver_aes = self.get_client_from_list(receiver_socket)[2]
 
-        message = f"[DM@{receiver}]: {message}"
-        message_length = len(message.encode())
+        encrypted_sender_username = self.em.encrypt_text(sender_username, receiver_aes)
+        sender_username_length = len(encrypted_sender_username)
 
-        payload = (
-            f"{protocol}{sender_username_length:04}{sender_username}{message_length:04}"
-        )
-        receiver_socket.sendall(payload.encode() + message.encode())
+        message = f"[DM@{receiver_username}]: {message}"
+
+        encrypted_msg = self.em.encrypt_text(message, receiver_aes)
+        encrypted_msg_length = len(encrypted_msg)
+
+        payload = f"{protocol}{sender_username_length:04}{encrypted_sender_username}{encrypted_msg_length:04}"
+        receiver_socket.sendall(payload.encode() + encrypted_msg)
 
     def receive_length(self, client_socket: socket.socket):
         return int(client_socket.recv(4).decode().strip())
 
     def receive_data(self, client_socket: socket.socket, length: int):
-        return client_socket.recv(length).decode().strip()
+        return client_socket.recv(length)
 
     def broadcast_message(self, sender_username, message):
         # Sending MSG protocol
@@ -232,41 +257,45 @@ class Server:
 
         protocol = PROTO.MSG.ljust(10)
 
-        message_length = len(message.encode())
-        message_length = f"{message_length:04}"
-
-        sender_username_length = len(sender_username.encode())
-        sender_username_length = f"{sender_username_length:04}"
-
-        protocol_payload = (
-            f"{protocol}{sender_username_length}{sender_username}{message_length}"
-        )
-
         for client in self.active_clients:
             user_socket = client[1]
+            user_aes_key = client[2]
+
+            encrypted_sender_name = self.em.encrypt_text(sender_username, user_aes_key)
+            sender_name_length = f"{len(encrypted_sender_name):04}"
+
+            encrypted_message = self.em.encrypt_text(message, user_aes_key)
+            message_length = f"{len(encrypted_message):04}"
+
+            protocol_payload = (
+                f"{protocol}{sender_name_length}{encrypted_sender_name}{message_length}"
+            )
 
             try:
                 user_socket.sendall(protocol_payload.encode())
-                user_socket.sendall(message.encode())
-            except Exception as e:
-                print(f"Failed to send message to client: {client[0]}")
+                user_socket.sendall(encrypted_message)
+            except Exception:
                 self.active_clients.remove(client)
 
-    def broadcast_service_message(self, protocol, data):
+    def broadcast_service_message(self, protocol: str, data: str):
         # Send protocol
         # Send data length
         # Send data
 
         protocol = protocol.ljust(10)
-        data_length = len(data.encode())
-        data_length = f"{data_length:04}"
-        payload = f"{protocol}{data_length}{data}"
 
         for client in self.active_clients:
             user_socket = client[1]
+            user_aes_key = client[2]
+
+            encrypted_data = self.em.encrypt_text(data, user_aes_key)
+
+            data_length = f"{len(encrypted_data):04}"
+            payload = f"{protocol}{data_length}{encrypted_data}"
             user_socket.sendall(payload.encode())
 
-    def receive_client_message(self, client_socket):
+    def receive_client_message(self, client_socket: socket.socket, username: str):
+
         message_length = client_socket.recv(4).decode()
         if not message_length:
             return None
@@ -280,68 +309,93 @@ class Server:
             if not chunk:
                 raise ConnectionError("Client disconnected during message transfer.")
 
-            message += chunk.decode()
+            message += chunk
             bytes_received += len(chunk)
 
-        return message
+        client_aes = self.get_client_from_list(client_socket)[2]
+        decrypted_message = self.em.decrypt_text(message, client_aes)
 
-    def forward_file_chunks(self, client_socket: socket.socket, username: str):
-        filename_length = int(client_socket.recv(4).decode().strip())
-        filename = client_socket.recv(filename_length).decode()
-        print("Server: Received filename:", filename)
-        file_size = int(client_socket.recv(10).decode().strip())
+        return decrypted_message
 
-        username_size = len(username.encode())
+    def forward_file_chunks(self, sender_socket: socket.socket, username: str):
+        sender = self.get_client_from_list(sender_socket)
+        sender_aes_key = sender[2]
 
-        file_payload = f"{PROTO.FILE.ljust(10)}{username_size:04}{username}{filename_length:04}{filename}{file_size:010}"
-        self.broadcast_message("SERVER", f"{username} is sending a file: {filename}...")
+        filename_length = int(sender_socket.recv(4).decode().strip())
+        encrypted_filename = sender_socket.recv(filename_length)
+        decrypted_filename = self.em.decrypt_text(encrypted_filename, sender_aes_key)
+
+        file_size = int(sender_socket.recv(10).decode().strip())
+
+        self.broadcast_message(
+            "SERVER", f"{username} is sending a file: {decrypted_filename}..."
+        )
 
         for client in self.active_clients:
-            user_socket = client[1]
+            client_socket = client[1]
+            client_aes = client[2]
 
-            if user_socket == client_socket:  # Don't send back to the sender
-                continue
+            if client_socket is sender_socket:
+                continue  # Don't send back to the sender
 
+            encrypted_username = self.em.encrypt_text(username, client_aes)
+            username_size = len(encrypted_username)
+
+            encrypted_file_name = self.em.encrypt_text(decrypted_filename, client_aes)
+            filename_length = len(encrypted_file_name)
+
+            file_payload = f"{PROTO.FILE.ljust(10)}{username_size:04}{encrypted_username}{filename_length:04}{encrypted_file_name}{file_size:010}"
             try:
-                user_socket.sendall(file_payload.encode())
+                client_socket.sendall(file_payload.encode())
             except Exception as e:
                 print("Error sending file payload: {e}")
 
         sent_size = 0
 
         while sent_size < file_size:
-            # Receive a chunk from the sender
-            chunk = client_socket.recv(min(4096, file_size - sent_size))
+            chunk = sender_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
 
             if not chunk:
                 break
 
-            sent_size += len(chunk)
+            sent_size += CONSTS.ORIGINAL_CHUNK_SIZE
 
-            # Relay the chunk to all clients
+            # Decrypt, encrypt and relay the chunk to active clients
             for client in self.active_clients:
-                user_socket = client[1]
+                client_socket = client[1]
 
-                if user_socket == client_socket:  # Don't send back to the sender
-                    continue
+                if client_socket == sender_socket:
+                    continue  # Don't send back to the sender
+
+                sender = self.get_client_from_list(sender_socket)
+                sender_aes = sender[2]
+
+                decrypted_chunk = self.em.decrypt_file_chunk(chunk, sender_aes)
+
+                client_aes = client[2]
+                encrypted_chunk = self.em.encrypt_file_chunk(
+                    decrypted_chunk, client_aes
+                )
 
                 try:
                     # client[1].send(b"FILE     ")
                     # client[1].send(f"{len(filename):04}".encode())  # send filename length
                     # client[1].send(filename.encode())
 
-                    user_socket.send(chunk)
+                    client_socket.send(encrypted_chunk)
                 except Exception as e:
                     print("Error sending file chunk: {e}")
         self.send_private_message(
-            client_socket, "SERVER", username, "Your file has been sent successfully."
+            sender_socket, "SERVER", username, "Your file has been sent successfully."
         )
 
     @debounce(1.0)
     def handle_typing_status(self):
         while self.typing_users:
-            username = self.typing_users.pop()
-            self.broadcast_service_message(PROTO.NO_TYPING, username)
+            encrypted_username = self.typing_users.pop()
+            decrypted_username = self.em.decrypt_text(encrypted_username, self.aes_key)
+
+            self.broadcast_service_message(PROTO.NO_TYPING, decrypted_username)
 
 
 if __name__ == "__main__":
