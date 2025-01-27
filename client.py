@@ -1,3 +1,4 @@
+from base64 import encode
 import json
 import os
 import platform
@@ -5,6 +6,8 @@ import re
 import socket
 import threading
 import sys
+from functools import wraps
+import time
 
 
 from PySide6 import QtCore as qtc
@@ -16,7 +19,9 @@ from assets.emoji.QCustomEmojiPicker import QCustomEmojiPicker
 from assets.ui.chat_client_ui import Ui_ChatClient
 from backend import sm
 from backend import PROTO
+from backend.constants import CONSTS
 from backend.encryption.encryption import EncryptionManager
+from backend.rate_manager import RateLimitedManager
 from screens.confirm_file_screen import ConfirmFileScreen
 from tools.toolkit import Tools as t
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -29,28 +34,42 @@ mutex = qtc.QMutex()
 
 
 class ChatClient(qtw.QWidget, Ui_ChatClient):
-    typing = qtc.Signal(str)
-    update_send_file_button_status = qtc.Signal()
+    # typing = qtc.Signal(str)
+    # update_send_file_button_status = qtc.Signal()
+    save_file = qtc.Signal(str, str)
 
     def __init__(self):
         super().__init__()
         self.setupUi(self)
         t.qt.center_widget(self)
 
-        self.setupCredentials()
-        self.updateUi()
-        self.connect_to_server()
+        try:
+            ### This order must not be changed
+            self.setupCredentials()
+            self.updateUi()
+            self.connect_to_server()
+            self.connect_to_slots()
+
+            ###
+        except Exception as e:
+            print(e)
 
         self.original_key_press_event = self.message_lineEdit.keyPressEvent
         self.message_lineEdit.keyPressEvent = self.my_key_press_event
 
+        self.typing_lock = threading.Lock()
         self.typing_list = ObservableSet()
-        self.connection_closed = False
-        self.tfile_paths = []  # temp file paths
-
         self.typing_list.set_add_listener(self.typing_list_handler)
         self.typing_list.set_remove_listener(self.typing_list_handler)
 
+        self.rate_manager = RateLimitedManager(0.9)
+
+        self.connection_closed = False
+        self.tfile_paths = []  # temp file paths
+
+        self.setup_audio_system()
+
+    def connect_to_slots(self):
         self.emoji_chooser_pushButton.clicked.connect(
             lambda: self.showEmojiPicker(self.message_lineEdit)
         )
@@ -59,23 +78,25 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.message_lineEdit.textChanged.connect(self.handle_typing)
         self.clear_chat_pushButton.clicked.connect(self.clear_chat)
         self.choose_file_option.triggered.connect(self.choose_file)
+        self.send_file_pushButton.clicked.connect(self.show_menu)
+        sm.start_send_file.connect_method(self.send_file_handler)
+        self.user_list_listWidget.itemClicked.connect(self.handle_on_user_click)
+        self.save_file.connect(self.decrypt_and_save_file)
 
+    def setup_audio_system(self):
         self.in_message = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.in_message.setAudioOutput(self.audio_output)
-        self.in_message.setSource("assets/audio/in_message.mp3")
-        self.send_file_pushButton.clicked.connect(self.show_menu)
-
-        sm.start_send_file.connect_method(self.send_file_handler)
+        self.in_message.setSource("assets/audio/in_message.wav")
 
     def setupCredentials(self):
         self.host = self._setup_credential(
-            "Enter host to connect to:", "Host", text="0.0.0.0"
+            "Enter host to connect to:", "Host", text=CONSTS.HOST
         )
-        self.port = int(self._setup_credential("Enter port:", "Port", text="1060"))
+        self.port = int(self._setup_credential("Enter port:", "Port", text=CONSTS.PORT))
         self.username = self._setup_credential("Enter your username:", "Username")
 
-        self.em = EncryptionManager(aes=True)
+        self.em = EncryptionManager()
         self.server_public_key = None
 
     def updateUi(self):
@@ -155,24 +176,33 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
     def connect_to_server(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # self.client_socket.settimeout(5)  # 5 seconds timeout
+
         try:
             self.client_socket.connect((self.host, self.port))
             self.show_popup("Successfully connected to the server.")
+
         except Exception as e:
             self.show_popup(
                 f"Unable to connect to server with host: {self.host} and port: {self.port}\n{e}",
                 critical=True,
                 duration=60000,
             )
-        ## Sending public key
+
+        ### This order must not be changed!
+        self.send_client_public_key()
+        self.get_server_public_key()
+        self.send_aes_key()
+        self.send_username()
+        self.start_listening()
+        ###
+
+    def send_client_public_key(self):
         public_key_bytes = self.em.serialize_public_key(self.em.public_key)
         public_key_length = len(public_key_bytes)
         payload = f"{PROTO.PUB_KEY.ljust(10)}{public_key_length:04}"
-
         self.client_socket.sendall(payload.encode() + public_key_bytes)
 
-        ### Getting server public key
+    def get_server_public_key(self):
         protocol = self.client_socket.recv(10).decode().strip()
         if protocol == PROTO.PUB_KEY:
             key_length = int(self.client_socket.recv(4).decode().strip())
@@ -181,7 +211,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
                 server_public_key_bytes
             )
 
-        ### Sending encrypted AES key
+    def send_aes_key(self):
         encrypted_aes_key = self.em.encrypt_aes_key(
             self.em.aes_key, self.server_public_key
         )
@@ -189,15 +219,14 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         payload = f"{PROTO.AES_KEY.ljust(10)}{encrypted_aes_length:04}"
         self.client_socket.sendall(payload.encode() + encrypted_aes_key)
 
-        ### Sending username
-        encrypted_username = self.em.encrypt_text(self.username)
+    def send_username(self):
+        encrypted_username = self.em.encrypt_text(self.username, self.em.aes_key)
         username_length = len(encrypted_username)
-        payload = f"{PROTO.USER_NAME.ljust(10)}{username_length:04}{encrypted_username}"
-        self.client_socket.sendall(payload.encode())
-        ###
+        payload = f"{PROTO.USER_NAME.ljust(10)}{username_length:04}"
+        self.client_socket.sendall(payload.encode() + encrypted_username)
 
+    def start_listening(self):
         self.listen_thread = ListenThread(self.client_socket)
-
         self.listen_thread.client_message_received.connect(
             self.handle_received_client_message
         )
@@ -205,15 +234,10 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             self.handle_received_service_message
         )
         self.listen_thread.pub_key_received.connect(self.handle_received_pub_key)
-        # self.listen_thread.receiving_file.connect(self.handle_receiving_file)
-
-        # self.listen_thread.receiving_file.connect(self.start_receive_file_thread)
         self.listen_thread.free_space_error.connect(self.handle_free_space_error)
         self.listen_thread.file_received.connect(self.handle_received_file)
         self.listen_thread.add_tfile_to_rmlist.connect(self.handle_add_tfile_to_rmlist)
         self.listen_thread.start()
-
-        self.user_list_listWidget.itemClicked.connect(self.handle_on_user_click)
 
     def start_receive_file_thread(self, filename, filesize):
         self.receive_file_thread = ReceiveFileThread(
@@ -247,7 +271,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         if msg.startswith("@"):
             nickname = self.extract_nickname(msg)
             if nickname:
-                self.send_private_message(nickname, msg)
+                self.send_private_message_to(nickname, msg)
                 return
 
         protocol = PROTO.MSG.ljust(10)
@@ -255,28 +279,31 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         encrypted_message = self.em.encrypt_text(msg, self.em.aes_key)
         msg_length = len(encrypted_message)
 
-        payload = f"{protocol}{msg_length:04}{encrypted_message}"
+        payload = protocol.encode() + f"{msg_length:04}".encode() + encrypted_message
 
         try:
-            self.client_socket.sendall(payload.encode())
+            self.client_socket.sendall(payload)
         except Exception as e:
             self.show_popup(e, 5000, critical=True)
         finally:
             self.message_lineEdit.clear()
 
-    def send_private_message(self, nickname: str, message: str):
+    def send_private_message_to(self, nickname: str, message: str):
         protocol = PROTO.PRIV_MSG.ljust(10)
-        message = message.replace(nickname, "")
+        message = message.replace(nickname, "").strip()
         nickname = nickname[1:]
         encrypted_nickname = self.em.encrypt_text(nickname, self.em.aes_key)
         encrypted_message = self.em.encrypt_text(message, self.em.aes_key)
         nickname_length = len(encrypted_nickname)
         message_length = len(encrypted_message)
         payload = (
-            f"{protocol}{nickname_length:04}{encrypted_nickname}{message_length:04}"
+            protocol.encode()
+            + f"{nickname_length:04}".encode()
+            + encrypted_nickname
+            + f"{message_length:04}".encode()
         )
 
-        self.client_socket.sendall(payload.encode())
+        self.client_socket.sendall(payload)
         self.client_socket.sendall(encrypted_message)
         self.message_lineEdit.clear()
 
@@ -289,30 +316,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
     def handle_received_pub_key(self, public_key_bytes: bytes):
         self.server_public_key = self.em.deserialize_public_key(public_key_bytes)
 
-    def handle_received_client_message(self, username, message: str):
-
-        # if message.startswith("**TYPING**"):
-        #     print(message)
-        #     self.add_to_typing_list(message)
-        #     return
-
-        # if message.startswith("**NO_TYPING**"):
-        #     print(message)
-        #     self.remove_from_typing_list(message)
-        #     return
-
-        # if message.startswith("**UPDATE_USER_LIST**"):
-        #     self.update_user_list.emit(message)
-        #     return
-
-        # if message.startswith("**SERVER_SHUTDOWN**"):
-        #     self.show_popup(
-        #         "Server was shut down. Connection closed", 3600000, critical=True
-        #     )
-        #     self.client_socket.close()
-        #     self.setEnabled(False)
-        #     return
-
+    def handle_received_client_message(self, username: bytes, message: bytes):
         if message == PROTO.EMPTY:
             print("Server was shut down. Connection closed.")
             self.show_popup(
@@ -330,16 +334,10 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         label = self.format_message(decrypted_username, decrypted_message)
         item.setSizeHint(label.sizeHint())
-        # label.setSizePolicy(item.sizeHint())
 
-        # label.setFixedSize(item_size)
-        # label.setMaximumHeight(item.sizeHint().height())
         self.message_box_listWidget.addItem(item)
         self.message_box_listWidget.setItemWidget(item, label)
         self.message_box_listWidget.scrollToBottom()
-
-        # if username != self.username:
-        #     self.in_message.play()
 
     def extract_nickname(self, message):
         # Regex pattern to match nicknames starting with @
@@ -389,41 +387,40 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         return label
 
-    def handle_received_service_message(self, protocol, data):
+    def handle_received_service_message(self, protocol: str, data: bytes):
         if protocol == PROTO.UPD_ULIST:
             self.update_user_list(data)
         if protocol == PROTO.SRV_DOWN:
             self.handle_server_shutdown()
         if protocol == PROTO.TYPING:
-            # self.add_to_typing_list(data)
-            self.typing_list.add(data)
+            decrypted_user = self.em.decrypt_text(data, self.em.aes_key)
+            self.typing_list.add(decrypted_user)
         if protocol == PROTO.NO_TYPING:
-            # self.remove_from_typing_list(data)
-            self.typing_list.discard(data)
+            decrypted_user = self.em.decrypt_text(data, self.em.aes_key)
+            self.typing_list.discard(decrypted_user)
 
-    def handle_received_file(self, temp_file_path, filename, username):
+    def handle_received_file(
+        self, temp_file_path: str, encrypted_filename: bytes, encrypted_username: bytes
+    ):
+        decrypted_filename = self.em.decrypt_text(encrypted_filename, self.em.aes_key)
+        decrypted_username = self.em.decrypt_text(encrypted_username, self.em.aes_key)
         print("Finish line:")
         print("Temp file path:", temp_file_path)
-        print("Filename:", filename)
-        print("Sender:", username)
-        self.add_file_link_to_chat(temp_file_path, filename, username)
+        print("Filename:", decrypted_filename)
+        print("Sender:", decrypted_username)
+        self.add_file_link_to_chat(
+            temp_file_path, decrypted_filename, decrypted_username
+        )
 
     def handle_free_space_error(self):
         qtw.QMessageBox.critical(self, "Drive Error", "Free space is not enough!")
 
-    def add_file_link_to_chat(self, temp_filepath, filename, username):
-        def save_file():
-            save_path, _ = qtw.QFileDialog.getSaveFileName(None, "Save File", filename)
-            if save_path:
-                with open(temp_filepath, "rb") as temp_file, open(save_path, "wb") as f:
-                    while chunk := temp_file.read(4096):
-                        f.write(chunk)
-                print(f"File saved as {save_path}")
+    def add_file_link_to_chat(self, temp_filepath: str, filename: str, username: str):
 
         item = qtw.QListWidgetItem()
 
         label = self.format_message(username, f"{filename}", clickable=True)
-        label.clicked.connect(save_file)
+        label.clicked.connect(lambda: self.save_file.emit(temp_filepath, filename))
         item.setSizeHint(label.sizeHint())
 
         # label.setSizePolicy(item.sizeHint())
@@ -453,10 +450,11 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
     #         file_data.extend(chunk)
     #     print(f"Received file: {filename}")
 
-    def update_user_list(self, data):
+    def update_user_list(self, data: bytes):
         self.user_list_listWidget.clear()
 
-        active_users_list = json.loads(data)
+        decrypted_json = self.em.decrypt_text(data, self.em.aes_key)
+        active_users_list = json.loads(decrypted_json)
 
         for user in active_users_list:
             self.user_list_listWidget.addItem(user)
@@ -477,7 +475,9 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         threading.Thread(target=self.send_typing_status).start()
 
     def send_typing_status(self):
-        self.send_service_message(PROTO.TYPING, self.username)
+        with self.rate_manager as released:
+            if released:
+                self.send_service_message(PROTO.TYPING, self.username)
 
     # def add_to_typing_list(self, username):
     #     self.typing_list.add(username)
@@ -502,18 +502,32 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.typing_list_label.setText(message)
 
     def send_file_handler(self, filepath):
-        self.send_file_thread = SendFileThread(self.client_socket, filepath)
+        self.send_file_thread = SendFileThread(self.client_socket, filepath, self.em)
         self.send_file_thread.start()
 
     def clear_chat(self):
         self.message_box_listWidget.clear()
 
+    def decrypt_and_save_file(self, filepath: str, filename: str):
+        save_path, _ = qtw.QFileDialog.getSaveFileName(None, "Save File", filename)
+        if save_path:
+            with open(filepath, "rb") as temp_file, open(save_path, "wb") as final_file:
+                while chunk := temp_file.read(CONSTS.ENCRYPTED_CHUNK_SIZE):
+                    decrypted_chunk = self.em.decrypt_file_chunk(chunk, self.em.aes_key)
+
+                    if CONSTS.EOF_MARKER in decrypted_chunk:
+                        decrypted_chunk = decrypted_chunk.rstrip(CONSTS.ZERO_BYTE)
+                        decrypted_chunk = decrypted_chunk.replace(
+                            CONSTS.EOF_MARKER, CONSTS.EMPTY_BYTE_VALUE
+                        )
+
+                    final_file.write(decrypted_chunk)
+
 
 class ListenThread(qtc.QThread):
-    client_message_received = qtc.Signal(str, str)
-    service_message_received = qtc.Signal(str, str)
-    # receiving_file = qtc.Signal(str, int)
-    file_received = qtc.Signal(str, str, str)
+    client_message_received = qtc.Signal(bytes, bytes)
+    service_message_received = qtc.Signal(str, bytes)
+    file_received = qtc.Signal(str, bytes, bytes)
     free_space_error = qtc.Signal()
     add_tfile_to_rmlist = qtc.Signal(str)
     pub_key_received = qtc.Signal(bytes)
@@ -528,6 +542,7 @@ class ListenThread(qtc.QThread):
             try:
                 with qtc.QMutexLocker(mutex):
                     protocol = self.client_socket.recv(10).decode().strip()
+                    print("Protocol:", protocol)
 
                     if protocol == PROTO.EMPTY:
                         self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
@@ -557,17 +572,16 @@ class ListenThread(qtc.QThread):
 
                     if protocol == PROTO.FILE:
                         username_length = self.get_received_length()
-                        username = self.get_received_data(username_length)
+                        encrypted_username = self.get_received_data(username_length)
                         filename_length = self.get_received_length()
-                        filename = self.get_received_data(filename_length)
-                        file_size = int(self.get_received_data(10))
+                        encrypted_filename = self.get_received_data(filename_length)
+                        file_size = int(self.get_received_data(10).decode().strip())
                         # self.receiving_file.emit(filename, file_size)
                         # self.receiving_file_thread = ReceiveFileThread(
                         #     self.client_socket, filename, file_size
                         # )
                         # self.receiving_file_thread.start()
                         free_disk_space = self.get_free_disk_space()
-                        print("Free disk space:", free_disk_space)
 
                         if free_disk_space <= file_size:
                             self.free_space_error.emit()
@@ -575,7 +589,9 @@ class ListenThread(qtc.QThread):
 
                         temp_file_path = self.receive_file(file_size)
                         self.add_tfile_to_rmlist.emit(temp_file_path)
-                        self.file_received.emit(temp_file_path, filename, username)
+                        self.file_received.emit(
+                            temp_file_path, encrypted_filename, encrypted_username
+                        )
 
                     # if protocol == PROTO.PUB_KEY:
                     #     key_length = self.get_received_length()
@@ -590,16 +606,16 @@ class ListenThread(qtc.QThread):
         return int(self.client_socket.recv(4).decode().strip())
 
     def get_received_data(self, length):
-        return self.client_socket.recv(length).decode().strip()
+        return self.client_socket.recv(length)
 
-    def receive_file(self, filesize):
+    def receive_file(self, filesize: int):
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             received_size = 0
             while received_size < filesize:
-                chunk = self.client_socket.recv(min(4096, filesize - received_size))
+                chunk = self.client_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
                 if not chunk:
                     break
-                received_size += len(chunk)
+                received_size += CONSTS.ORIGINAL_CHUNK_SIZE
                 temp_file.write(chunk)
         return temp_file.name
 
@@ -614,29 +630,45 @@ class ListenThread(qtc.QThread):
 
 
 class SendFileThread(qtc.QThread):
-    def __init__(self, client_socket: socket.socket, filepath):
+    def __init__(
+        self, client_socket: socket.socket, filepath: str, em: EncryptionManager
+    ):
         super().__init__()
         self.setTerminationEnabled(True)
 
         self.client_socket = client_socket
         self.filepath = filepath
+        self.em = em
 
     def run(self):
-        print("SendFileThread", self.filepath)
-
         protocol = PROTO.FILE.ljust(10)
         filename: str = os.path.basename(self.filepath)
-        filename_length = f"{len(filename.encode()):04}"
+        encrypted_filename = self.em.encrypt_text(filename, self.em.aes_key)
+        filename_length = f"{len(encrypted_filename):04}"
         file_size = os.path.getsize(self.filepath)
-        print("Sending filesize: ", file_size)
         file_size = f"{file_size:010}"
 
-        file_payload = f"{protocol}{filename_length}{filename}{file_size}"
-        print(file_payload)
-        self.client_socket.sendall(file_payload.encode())
+        file_payload = (
+            protocol.encode()
+            + filename_length.encode()
+            + encrypted_filename
+            + file_size.encode()
+        )
+
+        self.client_socket.sendall(file_payload)
 
         with open(self.filepath, "rb") as file:
-            self.client_socket.sendfile(file)
+            while chunk := file.read(CONSTS.ORIGINAL_CHUNK_SIZE):
+                is_last_chunk = len(chunk) < CONSTS.ORIGINAL_CHUNK_SIZE
+
+                if is_last_chunk:
+                    chunk += CONSTS.EOF_MARKER
+                    chunk += CONSTS.ZERO_BYTE * (
+                        CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
+                    )
+
+                encrypted_chunk = self.em.encrypt_file_chunk(chunk, self.em.aes_key)
+                self.client_socket.send(encrypted_chunk)
 
 
 class ReceiveFileThread(qtc.QThread):
@@ -670,9 +702,7 @@ class ClipboardClearingThread:
                 self.show_popup()
                 return
 
-        clipboard_content = pyperclip.paste()
-        if clipboard_content:
-            pyperclip.copy("")
+        pyperclip.copy("")
 
     def is_xclip_available(self):
         try:

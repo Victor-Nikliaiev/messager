@@ -16,10 +16,9 @@ ORIGINAL_CHUNK_SIZE = 32_740
 
 
 class EncryptionManager:
-    def __init__(self, aes=False):
+    def __init__(self):
         self.private_key, self.public_key = self.generate_rsa_keys()
-        if aes:
-            self.aes_key = self.generate_aes_key()
+        self.aes_key = self.generate_aes_key()
 
     # Generate RSA key pair
     def generate_rsa_keys(self):
