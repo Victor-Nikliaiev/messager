@@ -1,4 +1,3 @@
-from base64 import encode
 import json
 import os
 import platform
@@ -6,8 +5,6 @@ import re
 import socket
 import threading
 import sys
-from functools import wraps
-import time
 
 
 from PySide6 import QtCore as qtc
@@ -47,9 +44,10 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             ### This order must not be changed
             self.setupCredentials()
             self.updateUi()
+            self.setup_font_system(self)
+            self.setup_font_system(self.message_lineEdit)
             self.connect_to_server()
             self.connect_to_slots()
-
             ###
         except Exception as e:
             print(e)
@@ -88,6 +86,18 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         self.audio_output = QAudioOutput(self)
         self.in_message.setAudioOutput(self.audio_output)
         self.in_message.setSource("assets/audio/in_message.wav")
+
+    def setup_font_system(self, entity):
+        text_font = qtg.QFont()
+        text_font.setPixelSize(18)
+        text_font.setLetterSpacing(qtg.QFont.PercentageSpacing, 110)
+        emoji_font1 = qtg.QFont("Noto Color Emoji")
+        emoji_font2 = qtg.QFont("Segoe UI Emoji")
+        text_font.setFamilies(
+            [text_font.family(), emoji_font1.family(), emoji_font2.family()]
+        )
+
+        entity.setFont(text_font)
 
     def setupCredentials(self):
         self.host = self._setup_credential(
@@ -334,6 +344,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
 
         label = self.format_message(decrypted_username, decrypted_message)
         item.setSizeHint(label.sizeHint())
+        label.setTextInteractionFlags(qtc.Qt.TextSelectableByMouse)
 
         self.message_box_listWidget.addItem(item)
         self.message_box_listWidget.setItemWidget(item, label)
@@ -376,7 +387,8 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
             f'<span style="color:{message_color};{text_decorator}">{message}</span>',
             clickable=clickable,
         )
-
+        self.setup_font_system(label)
+        label.setStyleSheet("padding: 0 0 5px 0; margin-bottom: 0px;")
         label.setText(label.text().replace("\n", "<br>"))
         label.setWordWrap(True)  # Enable word wrapping
         label.setContentsMargins(0, 0, 0, 0)
@@ -408,6 +420,7 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         print("Temp file path:", temp_file_path)
         print("Filename:", decrypted_filename)
         print("Sender:", decrypted_username)
+
         self.add_file_link_to_chat(
             temp_file_path, decrypted_filename, decrypted_username
         )
@@ -512,16 +525,21 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         save_path, _ = qtw.QFileDialog.getSaveFileName(None, "Save File", filename)
         if save_path:
             with open(filepath, "rb") as temp_file, open(save_path, "wb") as final_file:
-                while chunk := temp_file.read(CONSTS.ENCRYPTED_CHUNK_SIZE):
-                    decrypted_chunk = self.em.decrypt_file_chunk(chunk, self.em.aes_key)
-
-                    if CONSTS.EOF_MARKER in decrypted_chunk:
-                        decrypted_chunk = decrypted_chunk.rstrip(CONSTS.ZERO_BYTE)
-                        decrypted_chunk = decrypted_chunk.replace(
-                            CONSTS.EOF_MARKER, CONSTS.EMPTY_BYTE_VALUE
+                try:
+                    while chunk := temp_file.read(CONSTS.ENCRYPTED_CHUNK_SIZE):
+                        decrypted_chunk = self.em.decrypt_file_chunk(
+                            chunk, self.em.aes_key
                         )
 
-                    final_file.write(decrypted_chunk)
+                        if CONSTS.EOF_MARKER in decrypted_chunk:
+                            decrypted_chunk = decrypted_chunk.rstrip(CONSTS.ZERO_BYTE)
+                            decrypted_chunk = decrypted_chunk.replace(
+                                CONSTS.EOF_MARKER, CONSTS.EMPTY_BYTE_VALUE
+                            )
+
+                        final_file.write(decrypted_chunk)
+                except Exception as e:
+                    print(e)
 
 
 class ListenThread(qtc.QThread):
@@ -611,12 +629,21 @@ class ListenThread(qtc.QThread):
     def receive_file(self, filesize: int):
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             received_size = 0
+            chunk_count = 0
             while received_size < filesize:
                 chunk = self.client_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
+                if len(chunk) != CONSTS.ENCRYPTED_CHUNK_SIZE:
+                    continue
                 if not chunk:
+                    print("No more data received")
                     break
                 received_size += CONSTS.ORIGINAL_CHUNK_SIZE
+                chunk_count += 1
                 temp_file.write(chunk)
+                print(f"Received chunk {chunk_count}")
+            print("Finished receiving file")
+            print(f"Received: {received_size}")
+            print(f"Original size: {filesize}")
         return temp_file.name
 
     def get_free_disk_space(path=None):
@@ -662,6 +689,7 @@ class SendFileThread(qtc.QThread):
                 is_last_chunk = len(chunk) < CONSTS.ORIGINAL_CHUNK_SIZE
 
                 if is_last_chunk:
+                    print("Size of last chunk:", len(chunk))
                     chunk += CONSTS.EOF_MARKER
                     chunk += CONSTS.ZERO_BYTE * (
                         CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)

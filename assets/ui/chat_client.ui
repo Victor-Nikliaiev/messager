@@ -21,11 +21,10 @@
    <string notr="true">QWidget {
 	color: #33979c;
 	background-color: #263238;
+	word-spacing: normal;
 }
 
-QListWidget QLabel {
-	font-family: &quot;Noto Color Emoji&quot;;
-}</string>
+ </string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -88,7 +87,7 @@ QListWidget QLabel {
           <bool>true</bool>
          </property>
          <property name="styleSheet">
-          <string notr="true">word-spacing: -5px;</string>
+          <string notr="true">padding: 5px 0 0 5px;</string>
          </property>
          <property name="frameShape">
           <enum>QFrame::Shape::Box</enum>
@@ -233,6 +232,9 @@ font-size: 11px;
           <property name="cursor" stdset="0">
            <cursorShape>PointingHandCursor</cursorShape>
           </property>
+          <property name="lineWidth">
+           <number>2</number>
+          </property>
           <property name="alternatingRowColors">
            <bool>true</bool>
           </property>
@@ -312,9 +314,7 @@ font-size: 11px;
        </property>
        <property name="styleSheet">
         <string notr="true">padding-left: 10px;
-position: fixed;
-border: 1px solid #33979c;
-word-spacing: -5px;</string>
+border: 1px solid #33979c;</string>
        </property>
        <property name="echoMode">
         <enum>QLineEdit::EchoMode::Normal</enum>

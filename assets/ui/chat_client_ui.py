@@ -75,11 +75,10 @@ class Ui_ChatClient(object):
             "QWidget {\n"
             "	color: #33979c;\n"
             "	background-color: #263238;\n"
+            "	word-spacing: normal;\n"
             "}\n"
             "\n"
-            "QListWidget QLabel {\n"
-            '	font-family: "Noto Color Emoji";\n'
-            "}"
+            " "
         )
         self.verticalLayout = QVBoxLayout(ChatClient)
         self.verticalLayout.setObjectName("verticalLayout")
@@ -122,7 +121,7 @@ class Ui_ChatClient(object):
         )
         self.message_box_listWidget.setSizePolicy(sizePolicy)
         self.message_box_listWidget.setAcceptDrops(True)
-        self.message_box_listWidget.setStyleSheet("word-spacing: -5px;")
+        self.message_box_listWidget.setStyleSheet("padding: 5px 0 0 5px;")
         self.message_box_listWidget.setFrameShape(QFrame.Shape.Box)
         self.message_box_listWidget.setFrameShadow(QFrame.Shadow.Raised)
         self.message_box_listWidget.setLineWidth(1)
@@ -221,6 +220,7 @@ class Ui_ChatClient(object):
         self.user_list_listWidget.viewport().setProperty(
             "cursor", QCursor(Qt.CursorShape.PointingHandCursor)
         )
+        self.user_list_listWidget.setLineWidth(2)
         self.user_list_listWidget.setAlternatingRowColors(True)
         self.user_list_listWidget.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
@@ -271,10 +271,7 @@ class Ui_ChatClient(object):
         self.message_lineEdit.setSizePolicy(sizePolicy3)
         self.message_lineEdit.setMinimumSize(QSize(0, 40))
         self.message_lineEdit.setStyleSheet(
-            "padding-left: 10px;\n"
-            "position: fixed;\n"
-            "border: 1px solid #33979c;\n"
-            "word-spacing: -5px;"
+            "padding-left: 10px;\n" "border: 1px solid #33979c;"
         )
         self.message_lineEdit.setEchoMode(QLineEdit.EchoMode.Normal)
         self.message_lineEdit.setAlignment(

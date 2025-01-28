@@ -3,6 +3,7 @@ from functools import wraps
 import os
 import socket
 import threading
+import time
 from typing import List, Tuple
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,8 @@ from backend import PROTO
 from backend import CONSTS
 from backend.encryption import EncryptionManager
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+from backend.header_receiver import HeaderReceiver
 
 
 class Server:
@@ -21,6 +24,7 @@ class Server:
         self.typing_users = set()
         self.executor = ThreadPoolExecutor()
         self.em = EncryptionManager()
+        self.lock = threading.Lock()
 
     def run(self):
         try:
@@ -334,13 +338,10 @@ class Server:
 
     def forward_file_chunks(self, sender_socket: socket.socket, username: str):
         sender = self.get_client_from_list(sender_socket)
-        sender_aes_key = sender[2]
+        header_receiver = HeaderReceiver(sender, self.em, username)
 
-        filename_length = int(sender_socket.recv(4).decode().strip())
-        encrypted_filename = sender_socket.recv(filename_length)
-        decrypted_filename = self.em.decrypt_text(encrypted_filename, sender_aes_key)
-
-        file_size = int(sender_socket.recv(10).decode().strip())
+        with header_receiver as hr:
+            decrypted_filename, file_size = hr
 
         self.broadcast_message(
             "SERVER", f"{username} is sending a file: {decrypted_filename}..."
@@ -374,13 +375,21 @@ class Server:
 
         sent_size = 0
 
+        print("File size:", file_size)
+        chunk_count = 0
+
         while sent_size < file_size:
             chunk = sender_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
 
-            if not chunk:
-                break
+            if len(chunk) != CONSTS.ENCRYPTED_CHUNK_SIZE:
+                print("Size of received chunk isn't proper!")
+                print("Chunk:", chunk)
+                continue
 
-            sent_size += CONSTS.ORIGINAL_CHUNK_SIZE
+            if not chunk:
+                time.sleep(1)
+                print("No chunk")
+                continue
 
             # Decrypt, encrypt and relay the chunk to active clients
             for client in self.active_clients:
@@ -400,11 +409,10 @@ class Server:
                 )
 
                 try:
-                    # client[1].send(b"FILE     ")
-                    # client[1].send(f"{len(filename):04}".encode())  # send filename length
-                    # client[1].send(filename.encode())
-
                     client_socket.send(encrypted_chunk)
+                    sent_size += CONSTS.ORIGINAL_CHUNK_SIZE
+                    chunk_count += 1
+                    print(f"{sent_size}/{file_size}/{chunk_count}")
                 except Exception as e:
                     print("Error sending file chunk: {e}")
         self.send_private_message(
