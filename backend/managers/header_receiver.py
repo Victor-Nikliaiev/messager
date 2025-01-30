@@ -1,5 +1,6 @@
 import socket
 from backend.encryption import EncryptionManager
+from backend.protocols import PROTO
 
 
 class HeaderReceiver:
@@ -10,14 +11,20 @@ class HeaderReceiver:
         sender_username: str,
     ):
         self.sender = sender
-        self.sender_socket: socket.socket = sender[1]
-        self.sender_aes = sender[2]
+        self.sender_socket: socket.socket = sender[0]
+        self.sender_aes = sender[1]
         self.sender_username = sender_username
         self.em = em
+        print("Inside of header receiver")
 
     def __enter__(self):
 
         try:
+            protocol = self.sender_socket.recv(10).decode().strip()
+
+            if protocol != PROTO.FILE:
+                return None
+
             filename_length = int(self.sender_socket.recv(4).decode().strip())
             encrypted_filename = self.sender_socket.recv(filename_length)
             decrypted_filename = self.em.decrypt_text(

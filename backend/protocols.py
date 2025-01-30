@@ -10,3 +10,5 @@ class PROTO:  # PROTOCOL
     PRIV_MSG = "PRIV_MSG"
     MSG = "MSG"
     EMPTY = ""
+    FTRAN_P0RT = "FTRAN_P0RT"
+    FT_REQUEST = "FT_REQUEST"

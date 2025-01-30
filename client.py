@@ -5,6 +5,7 @@ import re
 import socket
 import threading
 import sys
+import time
 
 
 from PySide6 import QtCore as qtc
@@ -16,9 +17,11 @@ from assets.emoji.QCustomEmojiPicker import QCustomEmojiPicker
 from assets.ui.chat_client_ui import Ui_ChatClient
 from backend import sm
 from backend import PROTO
-from backend.constants import CONSTS
-from backend.encryption.encryption import EncryptionManager
-from backend.rate_manager import RateLimitedManager
+from backend import CONSTS
+from backend.encryption import EncryptionManager
+from backend.managers import RateLimitedManager
+from backend.managers import HeaderReceiver
+from backend.managers.client_ft_manager import ClientFileTransferManager
 from screens.confirm_file_screen import ConfirmFileScreen
 from tools.toolkit import Tools as t
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -553,6 +556,7 @@ class ListenThread(qtc.QThread):
     def __init__(self, client_socket: socket.socket):
         super().__init__()
         self.client_socket = client_socket
+        self.client_ft_socket = None
         # self.setTerminationEnabled(True)
 
     def run(self):
@@ -588,28 +592,33 @@ class ListenThread(qtc.QThread):
                         username = self.get_received_data(username_length)
                         self.service_message_received.emit(PROTO.NO_TYPING, username)
 
-                    if protocol == PROTO.FILE:
-                        username_length = self.get_received_length()
-                        encrypted_username = self.get_received_data(username_length)
-                        filename_length = self.get_received_length()
-                        encrypted_filename = self.get_received_data(filename_length)
-                        file_size = int(self.get_received_data(10).decode().strip())
-                        # self.receiving_file.emit(filename, file_size)
-                        # self.receiving_file_thread = ReceiveFileThread(
-                        #     self.client_socket, filename, file_size
-                        # )
-                        # self.receiving_file_thread.start()
-                        free_disk_space = self.get_free_disk_space()
+                    if protocol == PROTO.FT_REQUEST:
+                        with ClientFileTransferManager(
+                            self.client_socket, receive=True
+                        ) as cftm:
+                            (
+                                client_ft_socket,
+                                encrypted_username,
+                                encrypted_filename,
+                                file_size,
+                            ) = cftm
 
-                        if free_disk_space <= file_size:
-                            self.free_space_error.emit()
-                            continue
+                            free_disk_space = self.get_free_disk_space()
 
-                        temp_file_path = self.receive_file(file_size)
-                        self.add_tfile_to_rmlist.emit(temp_file_path)
-                        self.file_received.emit(
-                            temp_file_path, encrypted_filename, encrypted_username
-                        )
+                            if free_disk_space <= file_size:
+                                self.free_space_error.emit()
+                                continue
+
+                            if not client_ft_socket:
+                                continue
+
+                            self.client_ft_socket = client_ft_socket
+
+                            temp_file_path = self.receive_file(file_size)
+                            self.add_tfile_to_rmlist.emit(temp_file_path)
+                            self.file_received.emit(
+                                temp_file_path, encrypted_filename, encrypted_username
+                            )
 
                     # if protocol == PROTO.PUB_KEY:
                     #     key_length = self.get_received_length()
@@ -629,18 +638,32 @@ class ListenThread(qtc.QThread):
     def receive_file(self, filesize: int):
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             received_size = 0
-            chunk_count = 0
+            chunk_index = 0
+
             while received_size < filesize:
-                chunk = self.client_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
-                if len(chunk) != CONSTS.ENCRYPTED_CHUNK_SIZE:
-                    continue
-                if not chunk:
-                    print("No more data received")
+                try:
+                    chunk = self.client_ft_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
+                    if not chunk:
+                        print("No more data received, waiting...")
+                        time.sleep(1)
+                        continue
+
+                    if len(chunk) != CONSTS.ENCRYPTED_CHUNK_SIZE:
+                        print(
+                            f"Incomplete chunk received (size: {len(chunk)}), retrying..."
+                        )
+                        continue
+
+                    self.client_ft_socket.send(f"ACK{chunk_index:06}".encode())
+
+                    received_size += CONSTS.ORIGINAL_CHUNK_SIZE
+                    chunk_index += 1
+                    temp_file.write(chunk)
+                    print(f"Received chunk {chunk_index}/{filesize}")
+                except Exception as e:
+                    print(f"Error receiving chunk: {e}")
                     break
-                received_size += CONSTS.ORIGINAL_CHUNK_SIZE
-                chunk_count += 1
-                temp_file.write(chunk)
-                print(f"Received chunk {chunk_count}")
+
             print("Finished receiving file")
             print(f"Received: {received_size}")
             print(f"Original size: {filesize}")
@@ -662,41 +685,78 @@ class SendFileThread(qtc.QThread):
     ):
         super().__init__()
         self.setTerminationEnabled(True)
-
         self.client_socket = client_socket
         self.filepath = filepath
         self.em = em
 
     def run(self):
-        protocol = PROTO.FILE.ljust(10)
-        filename: str = os.path.basename(self.filepath)
-        encrypted_filename = self.em.encrypt_text(filename, self.em.aes_key)
-        filename_length = f"{len(encrypted_filename):04}"
-        file_size = os.path.getsize(self.filepath)
-        file_size = f"{file_size:010}"
+        with ClientFileTransferManager(self.client_socket) as client_ft_socket:
+            protocol = PROTO.FILE.ljust(10)
+            filename: str = os.path.basename(self.filepath)
+            encrypted_filename = self.em.encrypt_text(filename, self.em.aes_key)
+            filename_length = f"{len(encrypted_filename):04}"
+            file_size = os.path.getsize(self.filepath)
+            file_size = f"{file_size:010}"
 
-        file_payload = (
-            protocol.encode()
-            + filename_length.encode()
-            + encrypted_filename
-            + file_size.encode()
-        )
+            file_payload = (
+                protocol.encode()
+                + filename_length.encode()
+                + encrypted_filename
+                + file_size.encode()
+            )
+            print("Send_file_payload:", file_payload)
 
-        self.client_socket.sendall(file_payload)
+            client_ft_socket.sendall(file_payload)
 
-        with open(self.filepath, "rb") as file:
-            while chunk := file.read(CONSTS.ORIGINAL_CHUNK_SIZE):
-                is_last_chunk = len(chunk) < CONSTS.ORIGINAL_CHUNK_SIZE
+            with open(self.filepath, "rb") as file:
+                chunk_index = 0
 
-                if is_last_chunk:
-                    print("Size of last chunk:", len(chunk))
-                    chunk += CONSTS.EOF_MARKER
-                    chunk += CONSTS.ZERO_BYTE * (
-                        CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
-                    )
+                while chunk := file.read(CONSTS.ORIGINAL_CHUNK_SIZE):
+                    is_last_chunk = len(chunk) < CONSTS.ORIGINAL_CHUNK_SIZE
 
-                encrypted_chunk = self.em.encrypt_file_chunk(chunk, self.em.aes_key)
-                self.client_socket.send(encrypted_chunk)
+                    if is_last_chunk:
+                        print("Size of last chunk:", len(chunk))
+                        chunk += CONSTS.EOF_MARKER
+                        chunk += CONSTS.ZERO_BYTE * (
+                            CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
+                        )
+
+                    encrypted_chunk = self.em.encrypt_file_chunk(chunk, self.em.aes_key)
+                    chunk_sent = False
+                    retries = 0
+                    max_retries = 5
+
+                    while not chunk_sent and retries < max_retries:
+                        client_ft_socket.send(encrypted_chunk)
+                        print("Size of sent encrypted chunk: ", len(encrypted_chunk))
+
+                        try:
+                            client_ft_socket.settimeout(5)
+                            ack = client_ft_socket.recv(8)
+                            if ack == f"ACK{chunk_index:06}".encode():
+                                chunk_sent = True
+                            else:
+                                print(
+                                    f"Invalid ACK for chunk {chunk_index} retrying..."
+                                )
+                                print("Received:", ack)
+                        except socket.timeout:
+                            print(
+                                f"Timeout waiting for ACK for chunk {chunk_index}, retrying..."
+                            )
+                            retries += 1
+                        finally:
+                            client_ft_socket.settimeout(None)
+
+                    if retries >= max_retries:
+                        print(
+                            f"Failed to send chunk {chunk_index} after {max_retries} retries. Aborting..."
+                        )
+                        return
+
+                    chunk_index += 1
+
+                print("Successfully sent...")
 
 
 class ReceiveFileThread(qtc.QThread):

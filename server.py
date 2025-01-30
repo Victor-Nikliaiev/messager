@@ -12,7 +12,8 @@ from backend import CONSTS
 from backend.encryption import EncryptionManager
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from backend.header_receiver import HeaderReceiver
+from backend.managers import HeaderReceiver
+from backend.managers import ServerFileTransferManager
 
 
 class Server:
@@ -119,9 +120,12 @@ class Server:
         #     ),
         # ).start()
 
-    def get_client_from_list(self, user_socket: socket.socket):
-        for client in self.active_clients:
-            if client[1] is user_socket:
+    def get_client_from_list(self, user_socket: socket.socket, active_list=None):
+        if active_list is None:
+            active_list = self.active_clients
+
+        for client in active_list:
+            if client[1] is user_socket or client[0] is user_socket:
                 return client
 
     def send_server_public_key_to_client(self, client_socket: socket.socket):
@@ -163,8 +167,16 @@ class Server:
                 self.broadcast_service_message(protocol, username)
                 self.handle_typing_status()
 
-            if protocol == PROTO.FILE:
-                self.forward_file_chunks(client_socket, username)
+            if protocol == PROTO.FT_REQUEST:
+                file_transfer_manager = ServerFileTransferManager(
+                    client_socket, self.active_clients
+                )
+
+                with file_transfer_manager as ftm:
+                    sender_file_socket, client_ft_sessions = ftm
+                    self.forward_file_chunks(
+                        sender_file_socket, client_socket, client_ft_sessions, username
+                    )
 
             if protocol == PROTO.PRIV_MSG:
                 self.receive_private_message(client_socket, username)
@@ -336,25 +348,45 @@ class Server:
 
         return decrypted_message
 
-    def forward_file_chunks(self, sender_socket: socket.socket, username: str):
+    # TODO: Client send file transfer request
+    # TODO: FileTransferServerManager established a connection with client on file transfer socket
+    # TODO: sender(client) send FILE PROTOCOL with data payload.
+    # TODO: server create another socket to communicate with receivers and connects to them through ft socket
+    # TODO: as server receive a chunk he decrypt, encrypt and send it back to clients
+    def forward_file_chunks(
+        self,
+        sender_file_socket: socket.socket,
+        sender_socket: socket.socket,
+        client_ft_sessions: List[Tuple[socket.socket, bytes]],
+        sender_username: str,
+    ):
+        print("Server, sender username:", sender_username)
+        print("Server, sender_socket:", sender_socket)
+        print("Server, client_ft_sessions:", client_ft_sessions)
+
         sender = self.get_client_from_list(sender_socket)
-        header_receiver = HeaderReceiver(sender, self.em, username)
+        sender = (sender_file_socket, sender[2])
+
+        print("Server, sender:", sender)
+        print("Server, forward_file_chunks:", sender)
+        header_receiver = HeaderReceiver(sender, self.em, sender_username)
 
         with header_receiver as hr:
-            decrypted_filename, file_size = hr
+            if hr:
+                print("hr is true...")
+                decrypted_filename, file_size = hr
+            else:
+                return
 
         self.broadcast_message(
-            "SERVER", f"{username} is sending a file: {decrypted_filename}..."
+            "SERVER", f"{sender_username} is sending a file: {decrypted_filename}..."
         )
 
-        for client in self.active_clients:
-            client_socket = client[1]
-            client_aes = client[2]
+        for client in client_ft_sessions:
+            client_socket = client[0]
+            client_aes = client[1]
 
-            if client_socket is sender_socket:
-                continue  # Don't send back to the sender
-
-            encrypted_username = self.em.encrypt_text(username, client_aes)
+            encrypted_username = self.em.encrypt_text(sender_username, client_aes)
             username_length = len(encrypted_username)
 
             encrypted_file_name = self.em.encrypt_text(decrypted_filename, client_aes)
@@ -374,49 +406,50 @@ class Server:
                 print("Error sending file payload: {e}")
 
         sent_size = 0
-
-        print("File size:", file_size)
-        chunk_count = 0
+        chunk_index = 0
 
         while sent_size < file_size:
-            chunk = sender_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
+            try:
+                chunk = sender_file_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
 
-            if len(chunk) != CONSTS.ENCRYPTED_CHUNK_SIZE:
-                print("Size of received chunk isn't proper!")
-                print("Chunk:", chunk)
-                continue
+                if not chunk:
+                    print("No chunk received, waiting...")
+                    time.sleep(1)
+                    continue
 
-            if not chunk:
-                time.sleep(1)
-                print("No chunk")
-                continue
+                # Decrypt, encrypt and relay the chunk to active clients
+                for receiver in client_ft_sessions:
+                    receiver_socket = receiver[0]
 
-            # Decrypt, encrypt and relay the chunk to active clients
-            for client in self.active_clients:
-                client_socket = client[1]
+                    # sender = self.get_client_from_list(
+                    #     sender_file_socket, client_ft_sessions
+                    # )
+                    sender_aes = sender[1]
 
-                if client_socket == sender_socket:
-                    continue  # Don't send back to the sender
+                    decrypted_chunk = self.em.decrypt_file_chunk(chunk, sender_aes)
+                    sender_file_socket.send(f"ACK{chunk_index:06}".encode())
 
-                sender = self.get_client_from_list(sender_socket)
-                sender_aes = sender[2]
+                    receiver_aes = receiver[1]
+                    encrypted_chunk = self.em.encrypt_file_chunk(
+                        decrypted_chunk, receiver_aes
+                    )
+                    try:
+                        receiver_socket.send(encrypted_chunk)
+                    except Exception as e:
+                        print(f"Error sending chunk to client: {e}")
 
-                decrypted_chunk = self.em.decrypt_file_chunk(chunk, sender_aes)
-
-                receiver_aes = client[2]
-                encrypted_chunk = self.em.encrypt_file_chunk(
-                    decrypted_chunk, receiver_aes
-                )
-
-                try:
-                    client_socket.send(encrypted_chunk)
                     sent_size += CONSTS.ORIGINAL_CHUNK_SIZE
-                    chunk_count += 1
-                    print(f"{sent_size}/{file_size}/{chunk_count}")
-                except Exception as e:
-                    print("Error sending file chunk: {e}")
+                    chunk_index += 1
+                    print(f"{sent_size}/{file_size}/{chunk_index} chunks forwarded")
+            except Exception as e:
+                print(f"Error receiving/sending file chunk: {e}")
+                break
+
         self.send_private_message(
-            sender_socket, "SERVER", username, "Your file has been sent successfully."
+            sender_socket,
+            "SERVER",
+            sender_username,
+            "Your file has been sent successfully.",
         )
 
     @debounce(1.0)
