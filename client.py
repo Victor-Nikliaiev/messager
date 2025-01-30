@@ -562,68 +562,68 @@ class ListenThread(qtc.QThread):
     def run(self):
         while True:
             try:
-                with qtc.QMutexLocker(mutex):
-                    protocol = self.client_socket.recv(10).decode().strip()
-                    print("Protocol:", protocol)
 
-                    if protocol == PROTO.EMPTY:
-                        self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
+                protocol = self.client_socket.recv(10).decode().strip()
+                print("Protocol:", protocol)
 
-                    if protocol == PROTO.MSG:
-                        username_length = self.get_received_length()
-                        username = self.get_received_data(username_length)
-                        message_length = self.get_received_length()
-                        message = self.get_received_data(message_length)
+                if protocol == PROTO.EMPTY:
+                    self.client_message_received.emit(PROTO.EMPTY, PROTO.EMPTY)
 
-                        self.client_message_received.emit(username, message)
+                if protocol == PROTO.MSG:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    message_length = self.get_received_length()
+                    message = self.get_received_data(message_length)
 
-                    if protocol == PROTO.UPD_ULIST:
-                        user_list_length = self.get_received_length()
-                        user_list = self.get_received_data(user_list_length)
-                        self.service_message_received.emit(PROTO.UPD_ULIST, user_list)
+                    self.client_message_received.emit(username, message)
 
-                    if protocol == PROTO.TYPING:
-                        username_length = self.get_received_length()
-                        username = self.get_received_data(username_length)
-                        self.service_message_received.emit(PROTO.TYPING, username)
+                if protocol == PROTO.UPD_ULIST:
+                    user_list_length = self.get_received_length()
+                    user_list = self.get_received_data(user_list_length)
+                    self.service_message_received.emit(PROTO.UPD_ULIST, user_list)
 
-                    if protocol == PROTO.NO_TYPING:
-                        username_length = self.get_received_length()
-                        username = self.get_received_data(username_length)
-                        self.service_message_received.emit(PROTO.NO_TYPING, username)
+                if protocol == PROTO.TYPING:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    self.service_message_received.emit(PROTO.TYPING, username)
 
-                    if protocol == PROTO.FT_REQUEST:
-                        with ClientFileTransferManager(
-                            self.client_socket, receive=True
-                        ) as cftm:
-                            (
-                                client_ft_socket,
-                                encrypted_username,
-                                encrypted_filename,
-                                file_size,
-                            ) = cftm
+                if protocol == PROTO.NO_TYPING:
+                    username_length = self.get_received_length()
+                    username = self.get_received_data(username_length)
+                    self.service_message_received.emit(PROTO.NO_TYPING, username)
 
-                            free_disk_space = self.get_free_disk_space()
+                if protocol == PROTO.FT_REQUEST:
+                    with ClientFileTransferManager(
+                        self.client_socket, receive=True
+                    ) as cftm:
+                        (
+                            client_ft_socket,
+                            encrypted_username,
+                            encrypted_filename,
+                            file_size,
+                        ) = cftm
 
-                            if free_disk_space <= file_size:
-                                self.free_space_error.emit()
-                                continue
+                        free_disk_space = self.get_free_disk_space()
 
-                            if not client_ft_socket:
-                                continue
+                        if free_disk_space <= file_size:
+                            self.free_space_error.emit()
+                            continue
 
-                            self.client_ft_socket = client_ft_socket
+                        if not client_ft_socket:
+                            continue
 
-                            temp_file_path = self.receive_file(file_size)
-                            self.add_tfile_to_rmlist.emit(temp_file_path)
-                            self.file_received.emit(
-                                temp_file_path, encrypted_filename, encrypted_username
-                            )
+                        self.client_ft_socket = client_ft_socket
 
-                    # if protocol == PROTO.PUB_KEY:
-                    #     key_length = self.get_received_length()
-                    #     pub_key_bytes = self.client_socket.recv(key_length)
-                    #     self.pub_key_received.emit(pub_key_bytes)
+                        temp_file_path = self.receive_file(file_size)
+                        self.add_tfile_to_rmlist.emit(temp_file_path)
+                        self.file_received.emit(
+                            temp_file_path, encrypted_filename, encrypted_username
+                        )
+
+                # if protocol == PROTO.PUB_KEY:
+                #     key_length = self.get_received_length()
+                #     pub_key_bytes = self.client_socket.recv(key_length)
+                #     self.pub_key_received.emit(pub_key_bytes)
 
             except Exception as e:
                 print(e)

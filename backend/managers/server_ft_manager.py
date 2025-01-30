@@ -19,7 +19,7 @@ class ServerFileTransferManager:
         self.active_clients = active_clients
         self.client_ft_sessions: List[Tuple[socket.socket, bytes]] = []
 
-    def __enter__(self):
+    def setup(self):
         self.server_file_socket_receiver = socket.socket(
             socket.AF_INET, socket.SOCK_STREAM
         )
@@ -41,18 +41,19 @@ class ServerFileTransferManager:
 
         return self.sender_file_socket, self.client_ft_sessions
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        if self.sender_file_socket:
-            self.sender_file_socket.close()
-        if self.server_file_socket_receiver:
-            self.server_file_socket_receiver.close()
-        if self.server_file_socket_sender:
-            self.server_file_socket_sender.close()
+        # def __exit__(self, exc_type, exc_value, traceback):
+        # if self.sender_file_socket:
+        #     self.sender_file_socket.close()
+        # if self.server_file_socket_receiver:
+        #     self.server_file_socket_receiver.close()
+        # if self.server_file_socket_sender:
+        #     self.server_file_socket_sender.close()
 
-        for ft_socket, _ in self.client_ft_sessions:
-            ft_socket.close()
+        # for ft_socket, _ in self.client_ft_sessions:
+        #     ft_socket.close()
 
-        self.client_ft_sessions.clear()
+        # self.client_ft_sessions.clear()
+        # pass
 
     def get_client_ft_sockets(self):
         self.transfer_port = None
@@ -84,3 +85,16 @@ class ServerFileTransferManager:
 
             client_aes_key = client[2]
             self.client_ft_sessions.append((client_ft_socket, client_aes_key))
+
+    def cleanup(self):
+        if self.sender_file_socket:
+            self.sender_file_socket.close()
+        if self.server_file_socket_receiver:
+            self.server_file_socket_receiver.close()
+        if self.server_file_socket_sender:
+            self.server_file_socket_sender.close()
+
+        for ft_socket, _ in self.client_ft_sessions:
+            ft_socket.close()
+
+        self.client_ft_sessions.clear()

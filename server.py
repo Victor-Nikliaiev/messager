@@ -120,12 +120,9 @@ class Server:
         #     ),
         # ).start()
 
-    def get_client_from_list(self, user_socket: socket.socket, active_list=None):
-        if active_list is None:
-            active_list = self.active_clients
-
-        for client in active_list:
-            if client[1] is user_socket or client[0] is user_socket:
+    def get_client_from_list(self, user_socket: socket.socket):
+        for client in self.active_clients:
+            if client[1] is user_socket:
                 return client
 
     def send_server_public_key_to_client(self, client_socket: socket.socket):
@@ -172,14 +169,37 @@ class Server:
                     client_socket, self.active_clients
                 )
 
-                with file_transfer_manager as ftm:
-                    sender_file_socket, client_ft_sessions = ftm
-                    self.forward_file_chunks(
-                        sender_file_socket, client_socket, client_ft_sessions, username
-                    )
+                sender_file_socket, client_ft_sessions = file_transfer_manager.setup()
+
+                self.executor.submit(
+                    self.forward_file_chunks,
+                    sender_file_socket,
+                    client_socket,
+                    client_ft_sessions,
+                    username,
+                    file_transfer_manager.cleanup,
+                )
+                # self.proceed_file_sending(
+                #     sender_file_socket, client_ft_sessions, client_socket, username
+                # )
+
+                # self.forward_file_chunks(
+                #     sender_file_socket, client_socket, client_ft_sessions, username
+                # )
 
             if protocol == PROTO.PRIV_MSG:
                 self.receive_private_message(client_socket, username)
+
+    # def proceed_file_sending(
+    #     self, sender_file_socket, client_ft_sessions, client_socket, username
+    # ):
+    #     self.executor.submit(
+    #         self.forward_file_chunks,
+    #         sender_file_socket,
+    #         client_socket,
+    #         client_ft_sessions,
+    #         username,
+    #     )
 
     def receive_private_message(self, client_socket: socket.socket, username: str):
         receiver_name_length = self.receive_length(client_socket)
@@ -359,6 +379,7 @@ class Server:
         sender_socket: socket.socket,
         client_ft_sessions: List[Tuple[socket.socket, bytes]],
         sender_username: str,
+        cleanup,
     ):
         print("Server, sender username:", sender_username)
         print("Server, sender_socket:", sender_socket)
@@ -451,6 +472,8 @@ class Server:
             sender_username,
             "Your file has been sent successfully.",
         )
+
+        cleanup()
 
     @debounce(1.0)
     def handle_typing_status(self):
