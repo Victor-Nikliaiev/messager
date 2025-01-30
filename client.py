@@ -19,6 +19,7 @@ from backend import sm
 from backend import PROTO
 from backend import CONSTS
 from backend.encryption import EncryptionManager
+from backend.encryption.encryption import ORIGINAL_CHUNK_SIZE
 from backend.managers import RateLimitedManager
 from backend.managers import HeaderReceiver
 from backend.managers.client_ft_manager import ClientFileTransferManager
@@ -529,18 +530,30 @@ class ChatClient(qtw.QWidget, Ui_ChatClient):
         if save_path:
             with open(filepath, "rb") as temp_file, open(save_path, "wb") as final_file:
                 try:
+                    prev_chunk: bytes = None
+
                     while chunk := temp_file.read(CONSTS.ENCRYPTED_CHUNK_SIZE):
                         decrypted_chunk = self.em.decrypt_file_chunk(
                             chunk, self.em.aes_key
                         )
 
                         if CONSTS.EOF_MARKER in decrypted_chunk:
-                            decrypted_chunk = decrypted_chunk.rstrip(CONSTS.ZERO_BYTE)
-                            decrypted_chunk = decrypted_chunk.replace(
-                                CONSTS.EOF_MARKER, CONSTS.EMPTY_BYTE_VALUE
-                            )
-
+                            if not decrypted_chunk.startswith(CONSTS.EOF_MARKER):
+                                decrypted_chunk = decrypted_chunk.rstrip(
+                                    CONSTS.ZERO_BYTE
+                                )
+                                decrypted_chunk = decrypted_chunk.replace(
+                                    CONSTS.EOF_MARKER, CONSTS.EMPTY_BYTE_VALUE
+                                )
+                            else:
+                                count = prev_chunk[-1:]
+                                count = int(count.decode())
+                                if count > 0:
+                                    decrypted_chunk = prev_chunk[-(count + 1) :]
+                                else:
+                                    decrypted_chunk = prev_chunk[:-1]
                         final_file.write(decrypted_chunk)
+                        prev_chunk = decrypted_chunk
                 except Exception as e:
                     print(e)
 
@@ -709,52 +722,73 @@ class SendFileThread(qtc.QThread):
             client_ft_socket.sendall(file_payload)
 
             with open(self.filepath, "rb") as file:
-                chunk_index = 0
+                # chunk_index = 0
 
                 while chunk := file.read(CONSTS.ORIGINAL_CHUNK_SIZE):
                     is_last_chunk = len(chunk) < CONSTS.ORIGINAL_CHUNK_SIZE
 
                     if is_last_chunk:
-                        print("Size of last chunk:", len(chunk))
-                        chunk += CONSTS.EOF_MARKER
-                        chunk += CONSTS.ZERO_BYTE * (
-                            CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
-                        )
+                        remaining_space = CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
+
+                        if remaining_space >= len(CONSTS.EOF_MARKER):
+                            chunk += CONSTS.EOF_MARKER
+                            chunk += CONSTS.ZERO_BYTE * (
+                                CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
+                            )
+                        else:
+                            if remaining_space > 1:
+                                chunk += CONSTS.ZERO_BYTE * (remaining_space - 1)
+                                chunk += f"{(remaining_space - 1)}".encode()
+                            else:
+                                chunk += b"0"
+
+                            encrypted_chunk = self.em.encrypt_file_chunk(
+                                chunk, self.em.aes_key
+                            )
+                            client_ft_socket.send(encrypted_chunk)
+
+                            chunk = CONSTS.EOF_MARKER
+                            chunk += CONSTS.ZERO_BYTE * (
+                                CONSTS.ORIGINAL_CHUNK_SIZE - len(chunk)
+                            )
 
                     encrypted_chunk = self.em.encrypt_file_chunk(chunk, self.em.aes_key)
-                    chunk_sent = False
-                    retries = 0
-                    max_retries = 5
+                    client_ft_socket.send(encrypted_chunk)
 
-                    while not chunk_sent and retries < max_retries:
-                        client_ft_socket.send(encrypted_chunk)
-                        print("Size of sent encrypted chunk: ", len(encrypted_chunk))
+                    # chunk_sent = False
+                    # retries = 0
+                    # max_retries = 5
 
-                        try:
-                            client_ft_socket.settimeout(5)
-                            ack = client_ft_socket.recv(8)
-                            if ack == f"ACK{chunk_index:06}".encode():
-                                chunk_sent = True
-                            else:
-                                print(
-                                    f"Invalid ACK for chunk {chunk_index} retrying..."
-                                )
-                                print("Received:", ack)
-                        except socket.timeout:
-                            print(
-                                f"Timeout waiting for ACK for chunk {chunk_index}, retrying..."
-                            )
-                            retries += 1
-                        finally:
-                            client_ft_socket.settimeout(None)
+                    # while not chunk_sent and retries < max_retries:
+                    #     client_ft_socket.send(encrypted_chunk)
 
-                    if retries >= max_retries:
-                        print(
-                            f"Failed to send chunk {chunk_index} after {max_retries} retries. Aborting..."
-                        )
-                        return
+                    #     print("Size of sent encrypted chunk: ", len(encrypted_chunk))
 
-                    chunk_index += 1
+                    #     try:
+                    #         client_ft_socket.settimeout(5)
+                    #         ack = client_ft_socket.recv(8)
+                    #         if ack == f"ACK{chunk_index:06}".encode():
+                    #             chunk_sent = True
+                    #         else:
+                    #             print(
+                    #                 f"Invalid ACK for chunk {chunk_index} retrying..."
+                    #             )
+                    #             print("Received:", ack)
+                    #     except socket.timeout:
+                    #         print(
+                    #             f"Timeout waiting for ACK for chunk {chunk_index}, retrying..."
+                    #         )
+                    #         retries += 1
+                    #     finally:
+                    #         client_ft_socket.settimeout(None)
+
+                    # if retries >= max_retries:
+                    #     print(
+                    #         f"Failed to send chunk {chunk_index} after {max_retries} retries. Aborting..."
+                    #     )
+                    #     return
+
+                    # chunk_index += 1
 
                 print("Successfully sent...")
 
