@@ -1,13 +1,21 @@
 import socket
+import threading
+import traceback
+from backend import ft_event
 
 from backend.protocols import PROTO
 
 
 class ClientFileTransferManager:
-    def __init__(self, client_socket: socket.socket, receive=False):
+    def __init__(
+        self,
+        client_socket: socket.socket,
+        receive=False,
+    ):
         self.client_socket = client_socket
         self.client_ft_socket = None
         self.receive = receive
+        self.rec_lock = threading.Lock()
 
     def __enter__(self):
         self.client_ft_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -17,8 +25,9 @@ class ClientFileTransferManager:
         return self.send_mode()
 
     def __exit__(self, exc_type, exc_value, traceback):
-        if self.client_ft_socket:
-            self.client_ft_socket.close()
+        # if self.client_ft_socket and not self.receive:
+        #     self.client_ft_socket.close()
+        pass
 
     def receive_mode(self):
         try:
@@ -67,12 +76,19 @@ class ClientFileTransferManager:
             print(e)
 
     def send_mode(self):
+        print(f"ft_event ID in ClientFTManager: {id(ft_event)}")
         protocol = PROTO.FT_REQUEST
 
-        self.client_socket.send(f"{protocol.ljust(10)}".encode())
-        receive = self.client_socket.recv(16)
+        self.client_socket.sendall(f"{protocol.ljust(10)}".encode())
+        # ready_status = server
+
+        # here error occurring
+        self.rec_lock.acquire()
+        receive = self.client_socket.recv(16)  # client socket in None
+
         protocol = receive[:10].decode().strip()
         print("Protocol client:", protocol)
+        self.rec_lock.release()
 
         if protocol != PROTO.FTRAN_P0RT:
             print("Protocol not supported")
@@ -86,9 +102,13 @@ class ClientFileTransferManager:
             return self.client_ft_socket
         except socket.error as e:
             print(e)
+            traceback.print_exc()
 
     def get_received_length(self):
         return int(self.client_ft_socket.recv(4).decode().strip())
 
     def get_received_data(self, length):
         return self.client_ft_socket.recv(length)
+
+    def cleanup(self):
+        self.client_ft_socket.close()

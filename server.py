@@ -1,9 +1,10 @@
-from base64 import encode
 from functools import wraps
+import hashlib
 import os
 import socket
 import threading
 import time
+import traceback
 from typing import List, Tuple
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,6 @@ from backend import PROTO
 from backend import CONSTS
 from backend.encryption import EncryptionManager
 from cryptography.hazmat.primitives.asymmetric import rsa
-
 from backend.managers import HeaderReceiver
 from backend.managers import ServerFileTransferManager
 
@@ -170,6 +170,9 @@ class Server:
                 )
 
                 sender_file_socket, client_ft_sessions = file_transfer_manager.setup()
+
+                print("Sender file socket:", sender_file_socket)
+                print("client_ft_sessions:", client_ft_sessions)
 
                 self.executor.submit(
                     self.forward_file_chunks,
@@ -368,11 +371,6 @@ class Server:
 
         return decrypted_message
 
-    # TODO: Client send file transfer request
-    # TODO: FileTransferServerManager established a connection with client on file transfer socket
-    # TODO: sender(client) send FILE PROTOCOL with data payload.
-    # TODO: server create another socket to communicate with receivers and connects to them through ft socket
-    # TODO: as server receive a chunk he decrypt, encrypt and send it back to clients
     def forward_file_chunks(
         self,
         sender_file_socket: socket.socket,
@@ -381,20 +379,20 @@ class Server:
         sender_username: str,
         cleanup,
     ):
-        print("Server, sender username:", sender_username)
-        print("Server, sender_socket:", sender_socket)
-        print("Server, client_ft_sessions:", client_ft_sessions)
+        # print("Server, sender username:", sender_username)
+        # print("Server, sender_socket:", sender_socket)
+        # print("Server, client_ft_sessions:", client_ft_sessions)
 
         sender = self.get_client_from_list(sender_socket)
         sender = (sender_file_socket, sender[2])
 
-        print("Server, sender:", sender)
-        print("Server, forward_file_chunks:", sender)
+        # print("Server, sender:", sender)
+        # print("Server, forward_file_chunks:", sender)
         header_receiver = HeaderReceiver(sender, self.em, sender_username)
 
         with header_receiver as hr:
             if hr:
-                print("hr is true...")
+                # print("hr is true...")
                 decrypted_filename, file_size = hr
             else:
                 return
@@ -426,44 +424,85 @@ class Server:
             except Exception as e:
                 print("Error sending file payload: {e}")
 
-        sent_size = 0
-        chunk_index = 0
-
-        while sent_size < file_size:
+        while True:
             try:
-                chunk = sender_file_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
+                sender_file_socket.sendall(PROTO.NEXT_CHUNK.ljust(10).encode())
 
-                if not chunk:
-                    print("No chunk received, waiting...")
-                    time.sleep(1)
-                    continue
+                while True:
+                    data = sender_file_socket.recv(CONSTS.ENCRYPTED_CHUNK_SIZE)
+                    # print("Received data from sender:", data)
+
+                    if data == PROTO.FT_DONE:
+                        print("Server received done!")
+                        break
+
+                    received_checksum = data[:32]
+                    encrypted_chunk = data[32:]
+
+                    calculated_checksum = hashlib.sha256(encrypted_chunk).digest()
+                    if received_checksum == calculated_checksum:
+                        print("Checksum of received data is OK")
+                        break
+
+                    print("We got NACK here...")
+                    sender_file_socket.sendall(PROTO.NACK.ljust(10).encode())
 
                 # Decrypt, encrypt and relay the chunk to active clients
                 for receiver in client_ft_sessions:
                     receiver_socket = receiver[0]
 
-                    # sender = self.get_client_from_list(
-                    #     sender_file_socket, client_ft_sessions
-                    # )
+                    if data == PROTO.FT_DONE:
+                        receiver_socket.sendall(PROTO.SV_READY.ljust(10).encode())
+                        request = receiver_socket.recv(10).decode().strip()
+
+                        if request == PROTO.NEXT_CHUNK:
+                            receiver_socket.sendall(PROTO.FT_DONE)
+
+                        continue
+
                     sender_aes = sender[1]
 
-                    decrypted_chunk = self.em.decrypt_file_chunk(chunk, sender_aes)
-                    sender_file_socket.send(f"ACK{chunk_index:06}".encode())
+                    decrypted_chunk = self.em.decrypt_file_chunk(
+                        encrypted_chunk, sender_aes
+                    )
+                    # sender_file_socket.send(f"ACK{chunk_index:06}".encode())
 
                     receiver_aes = receiver[1]
                     encrypted_chunk = self.em.encrypt_file_chunk(
                         decrypted_chunk, receiver_aes
                     )
-                    try:
-                        receiver_socket.send(encrypted_chunk)
-                    except Exception as e:
-                        print(f"Error sending chunk to client: {e}")
 
-                    sent_size += CONSTS.ORIGINAL_CHUNK_SIZE
-                    chunk_index += 1
-                    print(f"{sent_size}/{file_size}/{chunk_index} chunks forwarded")
+                    ####### Sending ready status:
+                    # print("Right before sending server ready status.")
+                    receiver_socket.sendall(PROTO.SV_READY.ljust(10).encode())
+                    request = receiver_socket.recv(10).decode().strip()
+
+                    if request != PROTO.NEXT_CHUNK:
+                        del client_ft_sessions[client]
+                        continue
+
+                    print("Received REQUEST from client receiver:", request)
+
+                    checksum = hashlib.sha256(encrypted_chunk).digest()
+                    while True:
+                        receiver_socket.sendall(checksum + encrypted_chunk)
+                        ack = receiver_socket.recv(10).decode().strip()
+                        if ack == PROTO.ACK:
+                            print("Got ack from receiver for a chunk")
+                            break
+                        elif ack == PROTO.NACK:
+                            # print("Got nack from receiver")
+                            continue
+                        break
+
+                if data == PROTO.FT_DONE:
+                    break
+                else:
+                    sender_file_socket.sendall(PROTO.ACK.ljust(10).encode())
+
             except Exception as e:
                 print(f"Error receiving/sending file chunk: {e}")
+                traceback.print_exc()
                 break
 
         self.send_private_message(

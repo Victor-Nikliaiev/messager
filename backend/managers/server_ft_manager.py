@@ -29,7 +29,7 @@ class ServerFileTransferManager:
         payload = f"{PROTO.FTRAN_P0RT.ljust(10)}{self.transfer_port:06}"
 
         try:
-            self.sender_socket.send(payload.encode())
+            self.sender_socket.sendall(payload.encode())
             self.sender_file_socket, _ = self.server_file_socket_receiver.accept()
             print(
                 "FileTransferServerManager: Sender connected to server ft-receiver socket."

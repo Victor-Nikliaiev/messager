@@ -20,6 +20,8 @@ class HeaderReceiver:
     def __enter__(self):
 
         try:
+            self.sender_socket.sendall(PROTO.SV_READY.ljust(10).encode())
+
             protocol = self.sender_socket.recv(10).decode().strip()
 
             if protocol != PROTO.FILE:

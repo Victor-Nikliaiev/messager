@@ -12,3 +12,8 @@ class PROTO:  # PROTOCOL
     EMPTY = ""
     FTRAN_P0RT = "FTRAN_P0RT"
     FT_REQUEST = "FT_REQUEST"
+    NEXT_CHUNK = "NEXT_CHUNK"
+    FT_DONE = b"FT_DONE"
+    ACK = "ACK"
+    NACK = "NACK"
+    SV_READY = "SV_READY"
